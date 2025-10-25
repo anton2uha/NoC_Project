@@ -1,114 +1,150 @@
 
-
 // ============================================================================
-// Buffer Module - Stores flits in 2 VCs, each holding 4 flits
+// Buffer Module
 // ============================================================================
 module Buffer (
 	input wire clk,
 	input wire rst,
 	
-	// Data input from upstream router
 	input wire [63:0] dataIn,
 	input wire dataIn_valid,
-	input wire [1:0] dataIn_vc,  // Which VC to write to (from upstream)
+	input wire [1:0] dataIn_vc,
 	
-	// From/To VC Allocator (VCA)
-	output wire [1:0] vc_status,  // Status of each VC (available/full)
-	input wire [1:0] vc_grant,    // VCA grants this VC for output
+	output wire [1:0] vc_status,
+	input wire [1:0] vc_grant,
 	
-	// To Route Computation (RC)
-	output wire [63:0] rc_flit_out,  // Head flit to RC for route computation
-	output wire rc_valid,             // Valid head flit ready
+	output wire [63:0] rc_flit_out,
+	output wire rc_valid,
 	
-	// From/To Crossbar Allocator (CBA)
-	input wire cba_grant,          // Crossbar grants permission to send
-	output wire cba_request,       // Request crossbar access
+	input wire cba_grant,
+	output wire cba_request,
 	
-	// To Crossbar Switch (CBS)
-	output wire [63:0] cbs_flit_out,  // Flit to send through crossbar
-	output wire [1:0] cbs_vc_out,     // Which VC this flit belongs to
+	output wire [63:0] cbs_flit_out,
+	output wire [1:0] cbs_vc_out,
 	output wire cbs_valid
 );
-
 	// ========================================================================
-	// VC Storage: 2 VCs, each with 4 flit slots
+	// Buffer Storage
 	// ========================================================================
 	reg [63:0] vc0_buffer [0:3];
 	reg [63:0] vc1_buffer [0:3];
 	
-	reg [2:0] vc0_head, vc0_tail;  // Read/write pointers (0-3, wraps around)
+	reg [2:0] vc0_head, vc0_tail;
 	reg [2:0] vc1_head, vc1_tail;
 	
-	reg [2:0] vc0_count;  // Number of flits in VC0 (0-4)
-	reg [2:0] vc1_count;  // Number of flits in VC1 (0-4)
+	reg [2:0] vc0_count;
+	reg [2:0] vc1_count;
 	
-	// ========================================================================
-	// VC Status: Each VC is available if not full
-	// ========================================================================
 	wire vc0_full = (vc0_count == 3'd4);
 	wire vc1_full = (vc1_count == 3'd4);
 	wire vc0_empty = (vc0_count == 3'd0);
 	wire vc1_empty = (vc1_count == 3'd0);
 	
-	assign vc_status[0] = ~vc0_full;  // VC0 available if not full
-	assign vc_status[1] = ~vc1_full;  // VC1 available if not full
+	assign vc_status[0] = ~vc0_full;
+	assign vc_status[1] = ~vc1_full;
 	
 	// ========================================================================
-	// Write Logic: Store incoming flits into specified VC
+	// Round-Robin Selection for Fair VC Access
 	// ========================================================================
+	reg last_vc_served;  // 0 = VC0 was last, 1 = VC1 was last
+	
+	// ========================================================================
+	// FIXED: Simultaneous Read/Write without Race Conditions
+	// ========================================================================
+	wire vc0_enqueue = dataIn_valid && (dataIn_vc == 2'b00) && !vc0_full;
+	wire vc1_enqueue = dataIn_valid && (dataIn_vc == 2'b01) && !vc1_full;
+	wire vc0_dequeue = cba_grant && (cbs_vc_out == 2'b00) && !vc0_empty;
+	wire vc1_dequeue = cba_grant && (cbs_vc_out == 2'b01) && !vc1_empty;
+	
 	always @(posedge clk or posedge rst) begin
 		if (rst) begin
-			vc0_head <= 0;
-			vc0_tail <= 0;
-			vc0_count <= 0;
-			vc1_head <= 0;
-			vc1_tail <= 0;
-			vc1_count <= 0;
+			vc0_head <= 3'd0;
+			vc0_tail <= 3'd0;
+			vc0_count <= 3'd0;
+			vc1_head <= 3'd0;
+			vc1_tail <= 3'd0;
+			vc1_count <= 3'd0;
+			last_vc_served <= 1'b0;
 		end else begin
-			// Write to VC0
-			if (dataIn_valid && dataIn_vc == 2'b00 && !vc0_full) begin
-				vc0_buffer[vc0_tail] <= dataIn;
-				vc0_tail <= (vc0_tail + 1) % 4;
-				vc0_count <= vc0_count + 1;
-			end
+			// ====================================================================
+			// VC0 Buffer Management with Race Condition Fix
+			// ====================================================================
+			case ({vc0_enqueue, vc0_dequeue})
+				2'b00: begin
+					// No operation
+					vc0_count <= vc0_count;
+				end
+				2'b01: begin
+					// Dequeue only
+					vc0_head <= (vc0_head == 3'd3) ? 3'd0 : vc0_head + 3'd1;
+					vc0_count <= vc0_count - 3'd1;
+				end
+				2'b10: begin
+					// Enqueue only
+					vc0_buffer[vc0_tail] <= dataIn;
+					vc0_tail <= (vc0_tail == 3'd3) ? 3'd0 : vc0_tail + 3'd1;
+					vc0_count <= vc0_count + 3'd1;
+				end
+				2'b11: begin
+					// Both enqueue and dequeue - count stays same
+					vc0_buffer[vc0_tail] <= dataIn;
+					vc0_tail <= (vc0_tail == 3'd3) ? 3'd0 : vc0_tail + 3'd1;
+					vc0_head <= (vc0_head == 3'd3) ? 3'd0 : vc0_head + 3'd1;
+					vc0_count <= vc0_count;  // No change
+				end
+			endcase
 			
-			// Write to VC1
-			if (dataIn_valid && dataIn_vc == 2'b01 && !vc1_full) begin
-				vc1_buffer[vc1_tail] <= dataIn;
-				vc1_tail <= (vc1_tail + 1) % 4;
-				vc1_count <= vc1_count + 1;
-			end
+			// ====================================================================
+			// VC1 Buffer Management with Race Condition Fix
+			// ====================================================================
+			case ({vc1_enqueue, vc1_dequeue})
+				2'b00: begin
+					// No operation
+					vc1_count <= vc1_count;
+				end
+				2'b01: begin
+					// Dequeue only
+					vc1_head <= (vc1_head == 3'd3) ? 3'd0 : vc1_head + 3'd1;
+					vc1_count <= vc1_count - 3'd1;
+				end
+				2'b10: begin
+					// Enqueue only
+					vc1_buffer[vc1_tail] <= dataIn;
+					vc1_tail <= (vc1_tail == 3'd3) ? 3'd0 : vc1_tail + 3'd1;
+					vc1_count <= vc1_count + 3'd1;
+				end
+				2'b11: begin
+					// Both enqueue and dequeue - count stays same
+					vc1_buffer[vc1_tail] <= dataIn;
+					vc1_tail <= (vc1_tail == 3'd3) ? 3'd0 : vc1_tail + 3'd1;
+					vc1_head <= (vc1_head == 3'd3) ? 3'd0 : vc1_head + 3'd1;
+					vc1_count <= vc1_count;  // No change
+				end
+			endcase
 			
-			// Read from VC0 (when granted by crossbar)
-			if (cba_grant && cbs_vc_out == 2'b00 && !vc0_empty) begin
-				vc0_head <= (vc0_head + 1) % 4;
-				vc0_count <= vc0_count - 1;
-			end
-			
-			// Read from VC1 (when granted by crossbar)
-			if (cba_grant && cbs_vc_out == 2'b01 && !vc1_empty) begin
-				vc1_head <= (vc1_head + 1) % 4;
-				vc1_count <= vc1_count - 1;
+			// ====================================================================
+			// Update Round-Robin State
+			// ====================================================================
+			if (cba_grant) begin
+				last_vc_served <= cbs_vc_out[0];  // Remember which VC was served
 			end
 		end
 	end
 	
 	// ========================================================================
-	// Route Computation Output: Send head flit from whichever VC has one
+	// Route Computation Interface - Fair VC Selection with Round-Robin
 	// ========================================================================
-	wire [2:0] vc0_flit_type = vc0_buffer[vc0_head][47:45];
-	wire [2:0] vc1_flit_type = vc1_buffer[vc1_head][47:45];
+	// FIXED: Fair selection using round-robin
+	// Priority depends on which VC was served last
+	wire select_vc0 = !vc0_empty && (vc1_empty || (last_vc_served == 1'b1));
+	wire select_vc1 = !vc1_empty && (vc0_empty || (last_vc_served == 1'b0));
 	
-	wire vc0_has_head = !vc0_empty && (vc0_flit_type == 3'b000);
-	wire vc1_has_head = !vc1_empty && (vc1_flit_type == 3'b000);
-	
-	assign rc_flit_out = vc0_has_head ? vc0_buffer[vc0_head] : 
-	                     vc1_has_head ? vc1_buffer[vc1_head] : 64'b0;
-	assign rc_valid = vc0_has_head || vc1_has_head;
+	assign rc_flit_out = select_vc0 ? vc0_buffer[vc0_head] : 
+	                     select_vc1 ? vc1_buffer[vc1_head] : 64'b0;
+	assign rc_valid = !vc0_empty || !vc1_empty;
 	
 	// ========================================================================
-	// Crossbar Output: Send flit from granted VC
-	// Priority: VC0 first, then VC1
+	// Crossbar Switch Interface
 	// ========================================================================
 	reg [1:0] active_vc;
 	
@@ -125,8 +161,8 @@ module Buffer (
 	assign cbs_vc_out = active_vc;
 	assign cbs_valid = (active_vc == 2'b00 && !vc0_empty) || (active_vc == 2'b01 && !vc1_empty);
 	
-	// Request crossbar if any VC has data and has been granted by VCA
 	assign cba_request = (!vc0_empty && vc_grant[0]) || (!vc1_empty && vc_grant[1]);
 
 endmodule
+
 
