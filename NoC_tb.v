@@ -1,6 +1,5 @@
 // ============================================================================
-// NoC Testbench - Edge-to-Edge Packet Testing (03 -> 43) - 4-bit Serialized
-// Tests packet routing from west edge to east edge through the mesh
+// NoC Testbench - Enhanced with Complete Flit Verification
 // ============================================================================
 `timescale 1ns/1ps
 
@@ -22,18 +21,11 @@ module NoC_tb;
 	// ========================================================================
 	// NoC Interface Signals (4-bit serialized)
 	// ========================================================================
-	
-	// 4-bit edge inputs
 	reg [3:0] in_west, in_south, in_east, in_north;
-	
-	// Select signals (which of 3 ports per side)
 	reg [1:0] west_sel, south_sel, east_sel, north_sel;
-	
-	// Valid and VC signals per side
 	reg in_west_valid, in_south_valid, in_east_valid, in_north_valid;
 	reg [1:0] in_west_vc, in_south_vc, in_east_vc, in_north_vc;
 	
-	// 4-bit edge outputs
 	wire [3:0] out_west, out_south, out_east, out_north;
 	wire out_west_valid, out_south_valid, out_east_valid, out_north_valid;
 	wire [1:0] out_west_vc, out_south_vc, out_east_vc, out_north_vc;
@@ -60,15 +52,69 @@ module NoC_tb;
 	// Test Variables
 	// ========================================================================
 	integer cycle_count;
-	reg [63:0] expected_head, expected_body, expected_tail;
-	reg head_received, body_received, tail_received;
 	
-	// Output reconstruction
-	reg [63:0] output_buffer;
-	reg [3:0] output_chunk_count;
-	reg reconstructing;
-	reg [63:0] completed_flit;
-	reg flit_complete;
+	// Output reconstruction for each side
+	reg [63:0] west_out_buffer, south_out_buffer, east_out_buffer, north_out_buffer;
+	reg [3:0] west_out_count, south_out_count, east_out_count, north_out_count;
+	reg [63:0] west_completed, south_completed, east_completed, north_completed;
+	reg west_complete, south_complete, east_complete, north_complete;
+	
+	// Acknowledgment signals to clear sticky completion flags
+	reg west_complete_ack, south_complete_ack, east_complete_ack, north_complete_ack;
+	
+	// Previous state of completion flags (for edge detection)
+	reg west_complete_prev, south_complete_prev, east_complete_prev, north_complete_prev;
+	
+	// Packet tracking
+	integer packets_sent;
+	integer packets_received;
+	integer packets_verified;
+	integer packets_failed;
+	
+	// Enhanced verification
+	reg [63:0] expected_flits [0:2];
+	reg [63:0] received_flits [0:2];
+	
+	// Debug control
+	reg enable_debug_monitor;
+	
+	// ========================================================================
+	// Port Name Lookup (for debug messages)
+	// ========================================================================
+	function [8*4:1] get_port_name;
+		input [1:0] side;      // 0=west, 1=south, 2=east, 3=north
+		input [1:0] position;  // 0=first, 1=middle, 2=last
+		begin
+			case ({side, position})
+				{2'd0, 2'd0}: get_port_name = "01";
+				{2'd0, 2'd1}: get_port_name = "02";
+				{2'd0, 2'd2}: get_port_name = "03";
+				{2'd1, 2'd0}: get_port_name = "10";
+				{2'd1, 2'd1}: get_port_name = "20";
+				{2'd1, 2'd2}: get_port_name = "30";
+				{2'd2, 2'd0}: get_port_name = "41";
+				{2'd2, 2'd1}: get_port_name = "42";
+				{2'd2, 2'd2}: get_port_name = "43";
+				{2'd3, 2'd0}: get_port_name = "14";
+				{2'd3, 2'd1}: get_port_name = "24";
+				{2'd3, 2'd2}: get_port_name = "34";
+				default: get_port_name = "??";
+			endcase
+		end
+	endfunction
+	
+	function [8*8:1] get_side_name;
+		input [1:0] side;
+		begin
+			case (side)
+				2'd0: get_side_name = "WEST";
+				2'd1: get_side_name = "SOUTH";
+				2'd2: get_side_name = "EAST";
+				2'd3: get_side_name = "NORTH";
+				default: get_side_name = "UNKNOWN";
+			endcase
+		end
+	endfunction
 	
 	// ========================================================================
 	// Helper Function: Create Packet Flit
@@ -89,7 +135,7 @@ module NoC_tb;
 	// ========================================================================
 	task display_flit;
 		input [63:0] flit;
-		input [8*20:1] label;
+		input [8*30:1] label;
 		begin
 			$display("  %s:", label);
 			$display("    Dest: (%0d,%0d) | Type: %s | ID: %0d | Payload: 0x%012h",
@@ -102,137 +148,673 @@ module NoC_tb;
 	endtask
 	
 	// ========================================================================
-	// Helper Task: Serialize and inject 64-bit flit
+	// TASK: Configure Active Ports (Set Select Signals)
 	// ========================================================================
-	task inject_flit;
+	task configure_ports;
+		input [1:0] west_port;   // 0=port01, 1=port02, 2=port03
+		input [1:0] south_port;  // 0=port10, 1=port20, 2=port30
+		input [1:0] east_port;   // 0=port41, 1=port42, 2=port43
+		input [1:0] north_port;  // 0=port14, 1=port24, 2=port34
+		begin
+			west_sel = west_port;
+			south_sel = south_port;
+			east_sel = east_port;
+			north_sel = north_port;
+			$display("[CONFIG] Active ports: West=%s, South=%s, East=%s, North=%s",
+				get_port_name(2'd0, west_port),
+				get_port_name(2'd1, south_port),
+				get_port_name(2'd2, east_port),
+				get_port_name(2'd3, north_port));
+		end
+	endtask
+	
+	// ========================================================================
+	// TASK: Inject Single Flit (Serialized over 16 cycles)
+	// ========================================================================
+	task inject_flit_on_side;
+		input [1:0] side;        // 0=west, 1=south, 2=east, 3=north
 		input [63:0] flit;
 		input [1:0] vc;
 		integer i;
 		begin
 			for (i = 0; i < 16; i = i + 1) begin
 				@(posedge clk);
-				in_west = flit[i*4 +: 4];
+				case (side)
+					2'd0: begin  // West
+						in_west = flit[i*4 +: 4];
+						in_west_valid = 1'b1;
+						in_west_vc = vc;
+					end
+					2'd1: begin  // South
+						in_south = flit[i*4 +: 4];
+						in_south_valid = 1'b1;
+						in_south_vc = vc;
+					end
+					2'd2: begin  // East
+						in_east = flit[i*4 +: 4];
+						in_east_valid = 1'b1;
+						in_east_vc = vc;
+					end
+					2'd3: begin  // North
+						in_north = flit[i*4 +: 4];
+						in_north_valid = 1'b1;
+						in_north_vc = vc;
+					end
+				endcase
+			end
+			@(posedge clk);
+			// Deassert valid
+			case (side)
+				2'd0: in_west_valid = 1'b0;
+				2'd1: in_south_valid = 1'b0;
+				2'd2: in_east_valid = 1'b0;
+				2'd3: in_north_valid = 1'b0;
+			endcase
+		end
+	endtask
+	
+	// ========================================================================
+	// TASK: Send Complete 3-Flit Packet
+	// ========================================================================
+	task send_packet;
+		input [1:0] src_side;
+		input [1:0] src_position;
+		input [1:0] dst_side;
+		input [1:0] dst_position;
+		input [6:0] pkt_id;
+		input [47:0] payload_head;
+		input [47:0] payload_body;
+		input [47:0] payload_tail;
+		input [1:0] vc;
+		
+		reg [2:0] dest_x, dest_y;
+		reg [63:0] head_flit, body_flit, tail_flit;
+		begin
+			// Calculate destination coordinates
+			case ({dst_side, dst_position})
+				{2'd0, 2'd0}: begin dest_x = 3'd0; dest_y = 3'd1; end
+				{2'd0, 2'd1}: begin dest_x = 3'd0; dest_y = 3'd2; end
+				{2'd0, 2'd2}: begin dest_x = 3'd0; dest_y = 3'd3; end
+				{2'd1, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd0; end
+				{2'd1, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd0; end
+				{2'd1, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd0; end
+				{2'd2, 2'd0}: begin dest_x = 3'd4; dest_y = 3'd1; end
+				{2'd2, 2'd1}: begin dest_x = 3'd4; dest_y = 3'd2; end
+				{2'd2, 2'd2}: begin dest_x = 3'd4; dest_y = 3'd3; end
+				{2'd3, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd4; end
+				{2'd3, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd4; end
+				{2'd3, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd4; end
+				default: begin dest_x = 3'd0; dest_y = 3'd0; end
+			endcase
+			
+			// Create flits
+			head_flit = create_flit(dest_y, dest_x, 3'b000, pkt_id, payload_head);
+			body_flit = create_flit(dest_y, dest_x, 3'b001, pkt_id, payload_body);
+			tail_flit = create_flit(dest_y, dest_x, 3'b010, pkt_id, payload_tail);
+			
+			$display("\n[CYCLE %0d] Sending packet from %s (port %s) to %s (port %s)",
+				cycle_count,
+				get_side_name(src_side), get_port_name(src_side, src_position),
+				get_side_name(dst_side), get_port_name(dst_side, dst_position));
+			$display("  Packet ID: %0d, VC: %0d", pkt_id, vc);
+			display_flit(head_flit, "HEAD");
+			display_flit(body_flit, "BODY");
+			display_flit(tail_flit, "TAIL");
+			
+			// Configure ports
+			case (src_side)
+				2'd0: configure_ports(src_position, south_sel, east_sel, north_sel);
+				2'd1: configure_ports(west_sel, src_position, east_sel, north_sel);
+				2'd2: configure_ports(west_sel, south_sel, src_position, north_sel);
+				2'd3: configure_ports(west_sel, south_sel, east_sel, src_position);
+			endcase
+			case (dst_side)
+				2'd0: configure_ports(dst_position, south_sel, east_sel, north_sel);
+				2'd1: configure_ports(west_sel, dst_position, east_sel, north_sel);
+				2'd2: configure_ports(west_sel, south_sel, dst_position, north_sel);
+				2'd3: configure_ports(west_sel, south_sel, east_sel, dst_position);
+			endcase
+			
+			// Clear completion flags
+			case (dst_side)
+				2'd0: begin west_complete_ack = 1; @(posedge clk); west_complete_ack = 0; end
+				2'd1: begin south_complete_ack = 1; @(posedge clk); south_complete_ack = 0; end
+				2'd2: begin east_complete_ack = 1; @(posedge clk); east_complete_ack = 0; end
+				2'd3: begin north_complete_ack = 1; @(posedge clk); north_complete_ack = 0; end
+			endcase
+			
+			// Inject flits
+			$display("  [CYCLE %0d] Injecting HEAD flit...", cycle_count);
+			inject_flit_on_side(src_side, head_flit, vc);
+			repeat(2) @(posedge clk);
+			
+			$display("  [CYCLE %0d] Injecting BODY flit...", cycle_count);
+			inject_flit_on_side(src_side, body_flit, vc);
+			repeat(2) @(posedge clk);
+			
+			$display("  [CYCLE %0d] Injecting TAIL flit...", cycle_count);
+			inject_flit_on_side(src_side, tail_flit, vc);
+			
+			$display("  [CYCLE %0d] Packet injection complete\n", cycle_count);
+		end
+	endtask
+	
+	// ========================================================================
+	// TASK: Send Packet - Side Specific (West)
+	// ========================================================================
+	task send_packet_west;
+		input [1:0] src_position;
+		input [1:0] dst_side;
+		input [1:0] dst_position;
+		input [6:0] pkt_id;
+		input [47:0] payload_head;
+		input [47:0] payload_body;
+		input [47:0] payload_tail;
+		input [1:0] vc;
+		
+		reg [2:0] dest_x, dest_y;
+		reg [63:0] head_flit, body_flit, tail_flit;
+		integer i;
+		begin
+			// Calculate destination
+			case ({dst_side, dst_position})
+				{2'd0, 2'd0}: begin dest_x = 3'd0; dest_y = 3'd1; end
+				{2'd0, 2'd1}: begin dest_x = 3'd0; dest_y = 3'd2; end
+				{2'd0, 2'd2}: begin dest_x = 3'd0; dest_y = 3'd3; end
+				{2'd1, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd0; end
+				{2'd1, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd0; end
+				{2'd1, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd0; end
+				{2'd2, 2'd0}: begin dest_x = 3'd4; dest_y = 3'd1; end
+				{2'd2, 2'd1}: begin dest_x = 3'd4; dest_y = 3'd2; end
+				{2'd2, 2'd2}: begin dest_x = 3'd4; dest_y = 3'd3; end
+				{2'd3, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd4; end
+				{2'd3, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd4; end
+				{2'd3, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd4; end
+				default: begin dest_x = 3'd0; dest_y = 3'd0; end
+			endcase
+			
+			head_flit = create_flit(dest_y, dest_x, 3'b000, pkt_id, payload_head);
+			body_flit = create_flit(dest_y, dest_x, 3'b001, pkt_id, payload_body);
+			tail_flit = create_flit(dest_y, dest_x, 3'b010, pkt_id, payload_tail);
+			
+			// Inject HEAD
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_west = head_flit[i*4 +: 4];
 				in_west_valid = 1'b1;
 				in_west_vc = vc;
 			end
 			@(posedge clk);
 			in_west_valid = 1'b0;
+			in_west = 4'b0;
+			repeat(2) @(posedge clk);
+			
+			// Inject BODY
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_west = body_flit[i*4 +: 4];
+				in_west_valid = 1'b1;
+				in_west_vc = vc;
+			end
+			@(posedge clk);
+			in_west_valid = 1'b0;
+			in_west = 4'b0;
+			repeat(2) @(posedge clk);
+			
+			// Inject TAIL
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_west = tail_flit[i*4 +: 4];
+				in_west_valid = 1'b1;
+				in_west_vc = vc;
+			end
+			@(posedge clk);
+			in_west_valid = 1'b0;
+			in_west = 4'b0;
 		end
 	endtask
 	
 	// ========================================================================
-	// Output Deserializer: Reconstruct 64-bit flits from 4-bit output
+	// TASK: Send Packet - Side Specific (South)
+	// ========================================================================
+	task send_packet_south;
+		input [1:0] src_position;
+		input [1:0] dst_side;
+		input [1:0] dst_position;
+		input [6:0] pkt_id;
+		input [47:0] payload_head;
+		input [47:0] payload_body;
+		input [47:0] payload_tail;
+		input [1:0] vc;
+		
+		reg [2:0] dest_x, dest_y;
+		reg [63:0] head_flit, body_flit, tail_flit;
+		integer i;
+		begin
+			// Calculate destination
+			case ({dst_side, dst_position})
+				{2'd0, 2'd0}: begin dest_x = 3'd0; dest_y = 3'd1; end
+				{2'd0, 2'd1}: begin dest_x = 3'd0; dest_y = 3'd2; end
+				{2'd0, 2'd2}: begin dest_x = 3'd0; dest_y = 3'd3; end
+				{2'd1, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd0; end
+				{2'd1, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd0; end
+				{2'd1, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd0; end
+				{2'd2, 2'd0}: begin dest_x = 3'd4; dest_y = 3'd1; end
+				{2'd2, 2'd1}: begin dest_x = 3'd4; dest_y = 3'd2; end
+				{2'd2, 2'd2}: begin dest_x = 3'd4; dest_y = 3'd3; end
+				{2'd3, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd4; end
+				{2'd3, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd4; end
+				{2'd3, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd4; end
+				default: begin dest_x = 3'd0; dest_y = 3'd0; end
+			endcase
+			
+			head_flit = create_flit(dest_y, dest_x, 3'b000, pkt_id, payload_head);
+			body_flit = create_flit(dest_y, dest_x, 3'b001, pkt_id, payload_body);
+			tail_flit = create_flit(dest_y, dest_x, 3'b010, pkt_id, payload_tail);
+			
+			// Inject HEAD
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_south = head_flit[i*4 +: 4];
+				in_south_valid = 1'b1;
+				in_south_vc = vc;
+			end
+			@(posedge clk);
+			in_south_valid = 1'b0;
+			in_south = 4'b0;
+			repeat(2) @(posedge clk);
+			
+			// Inject BODY
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_south = body_flit[i*4 +: 4];
+				in_south_valid = 1'b1;
+				in_south_vc = vc;
+			end
+			@(posedge clk);
+			in_south_valid = 1'b0;
+			in_south = 4'b0;
+			repeat(2) @(posedge clk);
+			
+			// Inject TAIL
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_south = tail_flit[i*4 +: 4];
+				in_south_valid = 1'b1;
+				in_south_vc = vc;
+			end
+			@(posedge clk);
+			in_south_valid = 1'b0;
+			in_south = 4'b0;
+		end
+	endtask
+	
+	// ========================================================================
+	// TASK: Send packet with MULTIPLE body flits
+	// ========================================================================
+	task send_packet_west_multi_body;
+		input [1:0] src_position;
+		input [1:0] dst_side;
+		input [1:0] dst_position;
+		input [6:0] pkt_id;
+		input [47:0] payload_head;
+		input [47:0] payload_tail;
+		input [1:0] vc;
+		input integer num_body_flits;
+		
+		reg [2:0] dest_x, dest_y;
+		reg [63:0] head_flit, body_flit, tail_flit;
+		integer i, b;
+		begin
+			// Calculate destination
+			case ({dst_side, dst_position})
+				{2'd0, 2'd0}: begin dest_x = 3'd0; dest_y = 3'd1; end
+				{2'd0, 2'd1}: begin dest_x = 3'd0; dest_y = 3'd2; end
+				{2'd0, 2'd2}: begin dest_x = 3'd0; dest_y = 3'd3; end
+				{2'd1, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd0; end
+				{2'd1, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd0; end
+				{2'd1, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd0; end
+				{2'd2, 2'd0}: begin dest_x = 3'd4; dest_y = 3'd1; end
+				{2'd2, 2'd1}: begin dest_x = 3'd4; dest_y = 3'd2; end
+				{2'd2, 2'd2}: begin dest_x = 3'd4; dest_y = 3'd3; end
+				{2'd3, 2'd0}: begin dest_x = 3'd1; dest_y = 3'd4; end
+				{2'd3, 2'd1}: begin dest_x = 3'd2; dest_y = 3'd4; end
+				{2'd3, 2'd2}: begin dest_x = 3'd3; dest_y = 3'd4; end
+				default: begin dest_x = 3'd0; dest_y = 3'd0; end
+			endcase
+			
+			head_flit = create_flit(dest_y, dest_x, 3'b000, pkt_id, payload_head);
+			tail_flit = create_flit(dest_y, dest_x, 3'b010, pkt_id, payload_tail);
+			
+			$display("[CYCLE %0d] Injecting HEAD flit (West, multi-body packet)...", cycle_count);
+			// Inject HEAD
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_west = head_flit[i*4 +: 4];
+				in_west_valid = 1'b1;
+				in_west_vc = vc;
+			end
+			@(posedge clk);
+			in_west_valid = 1'b0;
+			in_west = 4'b0;
+			repeat(2) @(posedge clk);
+			
+			// Inject MULTIPLE BODY flits
+			$display("[CYCLE %0d] Injecting %0d BODY flits (West)...", cycle_count, num_body_flits);
+			for (b = 0; b < num_body_flits; b = b + 1) begin
+				body_flit = create_flit(dest_y, dest_x, 3'b001, pkt_id, {40'hB0D0_0000, b[7:0]});
+				
+				for (i = 0; i < 16; i = i + 1) begin
+					@(posedge clk);
+					in_west = body_flit[i*4 +: 4];
+					in_west_valid = 1'b1;
+					in_west_vc = vc;
+				end
+				@(posedge clk);
+				in_west_valid = 1'b0;
+				in_west = 4'b0;
+				repeat(2) @(posedge clk);
+			end
+			
+			// Inject TAIL
+			$display("[CYCLE %0d] Injecting TAIL flit (West)...", cycle_count);
+			for (i = 0; i < 16; i = i + 1) begin
+				@(posedge clk);
+				in_west = tail_flit[i*4 +: 4];
+				in_west_valid = 1'b1;
+				in_west_vc = vc;
+			end
+			@(posedge clk);
+			in_west_valid = 1'b0;
+			in_west = 4'b0;
+		end
+	endtask
+	
+	// ========================================================================
+	// TASK: Verify Complete Packet (Enhanced with content verification)
+	// ========================================================================
+	task verify_complete_packet;
+    input [1:0] exp_side;
+    input [63:0] exp_head;
+    input [63:0] exp_body;
+    input [63:0] exp_tail;
+    input integer max_cycles;
+    
+    integer flits_received;
+    integer i;
+    reg [63:0] received_flit;
+    reg all_match;
+    reg [63:0] last_seen_flit;  // Track the last flit we counted
+    begin
+        flits_received = 0;
+        all_match = 1;
+        last_seen_flit = 64'hFFFFFFFFFFFFFFFF;  // Initialize to impossible value
+        
+        $display("[CYCLE %0d] Waiting & verifying complete packet (3 flits) on %s side (max %0d cycles)...",
+            cycle_count, get_side_name(exp_side), max_cycles);
+        
+        // Store expected flits
+        expected_flits[0] = exp_head;
+        expected_flits[1] = exp_body;
+        expected_flits[2] = exp_tail;
+        
+        for (i = 0; i < max_cycles && flits_received < 3; i = i + 1) begin
+            @(posedge clk);
+            
+            // Check if there's a NEW completed flit (different from last one we saw)
+            case (exp_side)
+                2'd0: begin
+                    if (west_complete && west_completed !== last_seen_flit) begin
+                        received_flit = west_completed;
+                        last_seen_flit = west_completed;
+                        
+                        // Verify this flit
+                        if (received_flit !== expected_flits[flits_received]) begin
+                            $display("[CYCLE %0d] ✗✗✗ FLIT MISMATCH ✗✗✗", cycle_count);
+                            $display("  Flit %0d/3:", flits_received + 1);
+                            $display("    Expected: 0x%016h", expected_flits[flits_received]);
+                            $display("    Received: 0x%016h", received_flit);
+                            display_flit(expected_flits[flits_received], "Expected");
+                            display_flit(received_flit, "Received");
+                            all_match = 0;
+                            packets_failed = packets_failed + 1;
+                        end else begin
+                            $display("[CYCLE %0d]   ✓ Flit %0d/3 received and verified", cycle_count, flits_received + 1);
+                        end
+                        flits_received = flits_received + 1;
+                    end
+                end
+                2'd1: begin
+                    if (south_complete && south_completed !== last_seen_flit) begin
+                        received_flit = south_completed;
+                        last_seen_flit = south_completed;
+                        
+                        if (received_flit !== expected_flits[flits_received]) begin
+                            $display("[CYCLE %0d] ✗✗✗ FLIT MISMATCH ✗✗✗", cycle_count);
+                            $display("  Flit %0d/3:", flits_received + 1);
+                            $display("    Expected: 0x%016h", expected_flits[flits_received]);
+                            $display("    Received: 0x%016h", received_flit);
+                            display_flit(expected_flits[flits_received], "Expected");
+                            display_flit(received_flit, "Received");
+                            all_match = 0;
+                            packets_failed = packets_failed + 1;
+                        end else begin
+                            $display("[CYCLE %0d]   ✓ Flit %0d/3 received and verified", cycle_count, flits_received + 1);
+                        end
+                        flits_received = flits_received + 1;
+                    end
+                end
+                2'd2: begin
+                    if (east_complete && east_completed !== last_seen_flit) begin
+                        received_flit = east_completed;
+                        last_seen_flit = east_completed;
+                        
+                        if (received_flit !== expected_flits[flits_received]) begin
+                            $display("[CYCLE %0d] ✗✗✗ FLIT MISMATCH ✗✗✗", cycle_count);
+                            $display("  Flit %0d/3:", flits_received + 1);
+                            $display("    Expected: 0x%016h", expected_flits[flits_received]);
+                            $display("    Received: 0x%016h", received_flit);
+                            display_flit(expected_flits[flits_received], "Expected");
+                            display_flit(received_flit, "Received");
+                            all_match = 0;
+                            packets_failed = packets_failed + 1;
+                        end else begin
+                            $display("[CYCLE %0d]   ✓ Flit %0d/3 received and verified", cycle_count, flits_received + 1);
+                        end
+                        flits_received = flits_received + 1;
+                    end
+                end
+                2'd3: begin
+                    if (north_complete && north_completed !== last_seen_flit) begin
+                        received_flit = north_completed;
+                        last_seen_flit = north_completed;
+                        
+                        if (received_flit !== expected_flits[flits_received]) begin
+                            $display("[CYCLE %0d] ✗✗✗ FLIT MISMATCH ✗✗✗", cycle_count);
+                            $display("  Flit %0d/3:", flits_received + 1);
+                            $display("    Expected: 0x%016h", expected_flits[flits_received]);
+                            $display("    Received: 0x%016h", received_flit);
+                            display_flit(expected_flits[flits_received], "Expected");
+                            display_flit(received_flit, "Received");
+                            all_match = 0;
+                            packets_failed = packets_failed + 1;
+                        end else begin
+                            $display("[CYCLE %0d]   ✓ Flit %0d/3 received and verified", cycle_count, flits_received + 1);
+                        end
+                        flits_received = flits_received + 1;
+                    end
+                end
+            endcase
+        end
+        
+        if (flits_received < 3) begin
+            $display("[CYCLE %0d] ✗✗✗ INCOMPLETE PACKET: only %0d/3 flits received on %s side ✗✗✗",
+                cycle_count, flits_received, get_side_name(exp_side));
+            all_match = 0;
+            packets_failed = packets_failed + 1;
+        end else if (all_match) begin
+            $display("[CYCLE %0d] ✓✓✓ Complete packet received and VERIFIED on %s side ✓✓✓", 
+                cycle_count, get_side_name(exp_side));
+            packets_received = packets_received + 1;
+            packets_verified = packets_verified + 1;
+        end else begin
+            $display("[CYCLE %0d] ✗✗✗ Packet received but CONTENT MISMATCH on %s side ✗✗✗",
+                cycle_count, get_side_name(exp_side));
+        end
+    end
+endtask
+
+
+	task clear_all_complete_flags;
+    begin
+        east_complete_ack = 1;
+        west_complete_ack = 1;
+        north_complete_ack = 1;
+        south_complete_ack = 1;
+        @(posedge clk);
+        east_complete_ack = 0;
+        west_complete_ack = 0;
+        north_complete_ack = 0;
+        south_complete_ack = 0;
+        repeat(3) @(posedge clk);
+    end
+endtask
+	
+	// ========================================================================
+	// Output Deserializers (Reconstruct 64-bit flits from 4-bit outputs)
 	// ========================================================================
 	always @(posedge clk or posedge rst) begin
 		if (rst) begin
-			output_buffer <= 64'b0;
-			output_chunk_count <= 4'b0;
-			reconstructing <= 1'b0;
-			completed_flit <= 64'b0;
-			flit_complete <= 1'b0;
+			west_out_buffer <= 64'b0;
+			west_out_count <= 4'b0;
+			west_completed <= 64'b0;
+			west_complete <= 1'b0;
 		end else begin
-			flit_complete <= 1'b0;  // Default: no complete flit this cycle
+			if (west_complete_ack) begin
+				west_complete <= 1'b0;
+			end
+			
+			if (out_west_valid) begin
+				west_out_buffer[west_out_count*4 +: 4] <= out_west;
+				if (west_out_count == 4'd15) begin
+					west_completed <= {out_west, west_out_buffer[59:0]};
+					west_complete <= 1'b1;
+					west_out_count <= 4'b0;
+				end else begin
+					west_out_count <= west_out_count + 1'b1;
+				end
+			end
+		end
+	end
+	
+	always @(posedge clk or posedge rst) begin
+		if (rst) begin
+			south_out_buffer <= 64'b0;
+			south_out_count <= 4'b0;
+			south_completed <= 64'b0;
+			south_complete <= 1'b0;
+		end else begin
+			if (south_complete_ack) begin
+				south_complete <= 1'b0;
+			end
+			
+			if (out_south_valid) begin
+				south_out_buffer[south_out_count*4 +: 4] <= out_south;
+				if (south_out_count == 4'd15) begin
+					south_completed <= {out_south, south_out_buffer[59:0]};
+					south_complete <= 1'b1;
+					south_out_count <= 4'b0;
+				end else begin
+					south_out_count <= south_out_count + 1'b1;
+				end
+			end
+		end
+	end
+	
+	always @(posedge clk or posedge rst) begin
+		if (rst) begin
+			east_out_buffer <= 64'b0;
+			east_out_count <= 4'b0;
+			east_completed <= 64'b0;
+			east_complete <= 1'b0;
+		end else begin
+			if (east_complete_ack) begin
+				east_complete <= 1'b0;
+			end
 			
 			if (out_east_valid) begin
-				// Accumulate 4-bit chunks
-				output_buffer[output_chunk_count*4 +: 4] <= out_east;
+				$display("[TB DESER EAST] Cycle %0d: Received chunk[%0d]=0x%h, count_next=%0d", 
+                     cycle_count, east_out_count, out_east, 
+                     (east_out_count == 4'd15) ? 0 : east_out_count + 1);
 				
-				if (output_chunk_count == 4'd0) begin
-					reconstructing <= 1'b1;
-				end
-				
-				if (output_chunk_count == 4'd15) begin
-					// Complete 64-bit flit reconstructed - combine all stored bits with final chunk
-					// out_east has the MSBs (bits 63:60), output_buffer has bits 59:0
-					completed_flit <= {out_east, output_buffer[59:0]};
-					flit_complete <= 1'b1;
-					reconstructing <= 1'b0;
-					output_chunk_count <= 4'b0;
+				east_out_buffer[east_out_count*4 +: 4] <= out_east;
+				if (east_out_count == 4'd15) begin
+					east_completed <= {out_east, east_out_buffer[59:0]};
+					east_complete <= 1'b1;
+					$display("[TB DESER EAST] Cycle %0d: *** FLIT COMPLETE *** completed=0x%h", 
+                         cycle_count, {out_east, east_out_buffer[59:0]});
+					east_out_count <= 4'b0;
 				end else begin
-					output_chunk_count <= output_chunk_count + 1'b1;
+					east_out_count <= east_out_count + 1'b1;
 				end
 			end
 		end
 	end
 	
-	// Check received flits on the cycle after they're complete
-	always @(posedge clk) begin
-		if (!rst && flit_complete) begin
-			if (!head_received && completed_flit == expected_head) begin
-				head_received <= 1;
-				$display("\n[CYCLE %0d] ✓ HEAD FLIT RECEIVED CORRECTLY at out43", cycle_count);
-				display_flit(completed_flit, "  HEAD");
-			end else if (head_received && !body_received && completed_flit == expected_body) begin
-				body_received <= 1;
-				$display("\n[CYCLE %0d] ✓ BODY FLIT RECEIVED CORRECTLY at out43", cycle_count);
-				display_flit(completed_flit, "  BODY");
-			end else if (body_received && !tail_received && completed_flit == expected_tail) begin
-				tail_received <= 1;
-				$display("\n[CYCLE %0d] ✓ TAIL FLIT RECEIVED CORRECTLY at out43", cycle_count);
-				display_flit(completed_flit, "  TAIL");
-				$display("\n========================================");
-				$display("SUCCESS! Complete packet received!");
-				$display("========================================\n");
+	always @(posedge clk or posedge rst) begin
+		if (rst) begin
+			north_out_buffer <= 64'b0;
+			north_out_count <= 4'b0;
+			north_completed <= 64'b0;
+			north_complete <= 1'b0;
+		end else begin
+			if (north_complete_ack) begin
+				north_complete <= 1'b0;
+			end
+			
+			if (out_north_valid) begin
+				north_out_buffer[north_out_count*4 +: 4] <= out_north;
+				if (north_out_count == 4'd15) begin
+					north_completed <= {out_north, north_out_buffer[59:0]};
+					north_complete <= 1'b1;
+					north_out_count <= 4'b0;
+				end else begin
+					north_out_count <= north_out_count + 1'b1;
+				end
 			end
 		end
 	end
 	
 	// ========================================================================
-	// Monitor: Track packet through intermediate routers (internal 64-bit)
+	// Monitor: Display when packets are received (only on rising edge)
 	// ========================================================================
-	always @(posedge clk) begin
-		if (!rst) begin
-			// Monitor Deserializer output (when 64-bit flit is complete)
-			if (dut.deser_out03_valid) begin
-				$display("[CYCLE %0d] Deserializer d03 completed 64-bit flit:", cycle_count);
-				display_flit(dut.deser_out03, "  Flit");
-			end
+	always @(posedge clk or posedge rst) begin
+		if (rst) begin
+			west_complete_prev <= 1'b0;
+			south_complete_prev <= 1'b0;
+			east_complete_prev <= 1'b0;
+			north_complete_prev <= 1'b0;
+		end else begin
+			west_complete_prev <= west_complete;
+			south_complete_prev <= south_complete;
+			east_complete_prev <= east_complete;
+			north_complete_prev <= north_complete;
 			
-			// Monitor Router 13 (entry point)
-			if (dut.r13.westIn_valid) begin
-				$display("[CYCLE %0d] Router(1,3) received on WEST input:", cycle_count);
-				display_flit(dut.r13.westIn, "  Flit");
+			if (west_complete && !west_complete_prev && enable_debug_monitor) begin
+				$display("[CYCLE %0d] *** Packet received on WEST side ***", cycle_count);
+				display_flit(west_completed, "Received");
 			end
-			
-			// Monitor Router 13 -> 23 link
-			if (dut.w_13to23_valid) begin
-				$display("[CYCLE %0d] Link r13->r23 (EAST):", cycle_count);
-				display_flit(dut.w_13to23, "  Flit");
+			if (south_complete && !south_complete_prev && enable_debug_monitor) begin
+				$display("[CYCLE %0d] *** Packet received on SOUTH side ***", cycle_count);
+				display_flit(south_completed, "Received");
 			end
-			
-			// Monitor Router 23 (middle hop)
-			if (dut.r23.westIn_valid) begin
-				$display("[CYCLE %0d] Router(2,3) received on WEST input:", cycle_count);
-				display_flit(dut.r23.westIn, "  Flit");
+			if (east_complete && !east_complete_prev && enable_debug_monitor) begin
+				$display("[CYCLE %0d] *** Packet received on EAST side ***", cycle_count);
+				display_flit(east_completed, "Received");
 			end
-			
-			// Monitor Router 23 -> 33 link
-			if (dut.w_23to33_valid) begin
-				$display("[CYCLE %0d] Link r23->r33 (EAST):", cycle_count);
-				display_flit(dut.w_23to33, "  Flit");
-			end
-			
-			// Monitor Router 33 (exit point)
-			if (dut.r33.westIn_valid) begin
-				$display("[CYCLE %0d] Router(3,3) received on WEST input:", cycle_count);
-				display_flit(dut.r33.westIn, "  Flit");
-			end
-			
-			// Monitor Serializer input (when router outputs 64-bit flit)
-			if (dut.ser_in43_valid) begin
-				$display("[CYCLE %0d] Serializer s43 received 64-bit flit from router:", cycle_count);
-				display_flit(dut.ser_in43, "  Flit");
-			end
-			
-			// Monitor serialized output start
-			if (out_east_valid && output_chunk_count == 4'd0) begin
-				$display("[CYCLE %0d] *** OUTPUT at out43 (starting serialization) ***", cycle_count);
-			end
-			
-			// Monitor when a complete flit is reconstructed from output
-			if (flit_complete) begin
-				$display("[CYCLE %0d] *** COMPLETE 64-bit flit reconstructed from out43 ***", cycle_count);
-				display_flit(completed_flit, "  Reconstructed");
+			if (north_complete && !north_complete_prev && enable_debug_monitor) begin
+				$display("[CYCLE %0d] *** Packet received on NORTH side ***", cycle_count);
+				display_flit(north_completed, "Received");
 			end
 		end
 	end
@@ -241,47 +823,33 @@ module NoC_tb;
 	// Main Test Sequence
 	// ========================================================================
 	initial begin
-		// Initialize VCD dump for waveform viewing
-		$dumpfile("noc_test_serialized.vcd");
+		$dumpfile("noc_test_verified.vcd");
 		$dumpvars(0, NoC_tb);
 		
 		$display("\n================================================================================");
-		$display("NoC Edge-to-Edge Test: 03 -> 43 (4-bit Serialized Interface)");
-		$display("Test: Send 3-flit packet from west edge of router(1,3) to east edge of router(3,3)");
-		$display("Expected path: in03 -> r13 -> r23 -> r33 -> out43");
-		$display("Note: Each 64-bit flit is sent/received as 16 cycles of 4-bit chunks");
+		$display("NoC Enhanced Testbench with Complete Flit Verification");
 		$display("================================================================================\n");
 		
 		// ====================================================================
-		// Phase 1: Reset and Initialization
+		// Initialization
 		// ====================================================================
-		$display("[PHASE 1] Reset and Initialization");
-		$display("------------------------------------");
-		
 		cycle_count = 0;
 		rst = 1;
-		head_received = 0;
-		body_received = 0;
-		tail_received = 0;
-		output_buffer = 64'b0;
-		output_chunk_count = 4'b0;
-		reconstructing = 1'b0;
-		completed_flit = 64'b0;
-		flit_complete = 1'b0;
+		packets_sent = 0;
+		packets_received = 0;
+		packets_verified = 0;
+		packets_failed = 0;
+		enable_debug_monitor = 0;  // Disable for cleaner output
 		
-		// Initialize all inputs to zero
 		in_west = 4'b0;
 		in_south = 4'b0;
 		in_east = 4'b0;
 		in_north = 4'b0;
 		
-		// Set select signals
-		// west_sel = 2'b10 selects port 03 (third port on west side)
-		// east_sel = 2'b10 selects port 43 (third port on east side)
-		west_sel = 2'b10;   // Select port 03
-		south_sel = 2'b00;  // Don't care (not used)
-		east_sel = 2'b10;   // Select port 43
-		north_sel = 2'b00;  // Don't care (not used)
+		west_sel = 2'b00;
+		south_sel = 2'b00;
+		east_sel = 2'b00;
+		north_sel = 2'b00;
 		
 		in_west_valid = 0;
 		in_south_valid = 0;
@@ -293,138 +861,344 @@ module NoC_tb;
 		in_east_vc = 2'b00;
 		in_north_vc = 2'b00;
 		
-		$display("All inputs initialized to 0");
-		$display("Select signals configured: west_sel=2'b10 (port 03), east_sel=2'b10 (port 43)");
+		west_complete_ack = 0;
+		south_complete_ack = 0;
+		east_complete_ack = 0;
+		north_complete_ack = 0;
 		
-		// Hold reset for 5 cycles
+		west_complete_prev = 0;
+		south_complete_prev = 0;
+		east_complete_prev = 0;
+		north_complete_prev = 0;
+		
 		repeat(5) @(posedge clk);
 		rst = 0;
-		$display("Reset released at cycle %0d\n", cycle_count);
-		
-		// Wait a few cycles for initialization
+		$display("[CYCLE %0d] Reset released\n", cycle_count);
 		repeat(3) @(posedge clk);
 		
 		// ====================================================================
-		// Phase 2: Create Packet
+		// TEST CASE 1: West to East (Port 03 → Port 43)
 		// ====================================================================
-		$display("\n[PHASE 2] Packet Creation");
-		$display("------------------------------------");
+		$display("\n========================================");
+		$display("TEST CASE 1: West to East");
+		$display("========================================");
+		/*
+		send_packet(2'd0, 2'd2, 2'd2, 2'd2, 7'd1, 48'hABCD_1111_0001, 48'hABCD_1111_0002, 48'hABCD_1111_0003, 2'b01);
+		packets_sent = packets_sent + 1;
+		verify_complete_packet(2'd2, 
+			create_flit(3'd3, 3'd4, 3'b000, 7'd1, 48'hABCD_1111_0001),
+			create_flit(3'd3, 3'd4, 3'b001, 7'd1, 48'hABCD_1111_0002),
+			create_flit(3'd3, 3'd4, 3'b010, 7'd1, 48'hABCD_1111_0003),
+			250); */
+			
+		fork
+			begin
+				send_packet(2'd0, 2'd2, 2'd2, 2'd2, 7'd1, 48'hABCD_1111_0001, 48'hABCD_1111_0002, 48'hABCD_1111_0003, 2'b01);
+				packets_sent = packets_sent + 1;
+		end
+		begin
+				#10; // Small delay to let send_packet start
+				verify_complete_packet(2'd2, 
+				create_flit(3'd3, 3'd4, 3'b000, 7'd1, 48'hABCD_1111_0001),
+				create_flit(3'd3, 3'd4, 3'b001, 7'd1, 48'hABCD_1111_0002),
+				create_flit(3'd3, 3'd4, 3'b010, 7'd1, 48'hABCD_1111_0003),
+				250);
+		end
+		join	
 		
-		// Create 3-flit packet destined for (3,4) - beyond the mesh
-		// This forces router(3,3) to forward east to out43
-		expected_head = create_flit(3'd3, 3'd4, 3'b000, 7'd42, 48'hDEADBEEF0001);
-		expected_body = create_flit(3'd3, 3'd4, 3'b001, 7'd42, 48'hCAFEBABE0002);
-		expected_tail = create_flit(3'd3, 3'd4, 3'b010, 7'd42, 48'h123456789ABC);
-		
-		$display("Packet created with ID=42, destination (3,4):");
-		display_flit(expected_head, "HEAD flit");
-		display_flit(expected_body, "BODY flit");
-		display_flit(expected_tail, "TAIL flit");
-		$display("Each flit will be serialized into 16 cycles of 4-bit chunks");
-		
-		// ====================================================================
-		// Phase 3: Inject HEAD Flit (16 cycles of 4-bit chunks)
-		// ====================================================================
-		$display("\n[PHASE 3] Injecting HEAD Flit at in03 (via in_west with west_sel=2'b10)");
-		$display("------------------------------------");
-		$display("[CYCLE %0d] Starting HEAD flit serialization (16 cycles)...", cycle_count);
-		
-		inject_flit(expected_head, 2'b00);
-		$display("[CYCLE %0d] HEAD flit injection complete", cycle_count);
-		
-		// Wait for deserializer to accumulate
-		repeat(2) @(posedge clk);
-		
-		// ====================================================================
-		// Phase 4: Inject BODY Flit (16 cycles of 4-bit chunks)
-		// ====================================================================
-		$display("\n[PHASE 4] Injecting BODY Flit at in03");
-		$display("------------------------------------");
-		$display("[CYCLE %0d] Starting BODY flit serialization (16 cycles)...", cycle_count);
-		
-		inject_flit(expected_body, 2'b00);
-		$display("[CYCLE %0d] BODY flit injection complete", cycle_count);
-		
-		// Wait for deserializer to accumulate
-		repeat(2) @(posedge clk);
+		repeat(10) @(posedge clk);
 		
 		// ====================================================================
-		// Phase 5: Inject TAIL Flit (16 cycles of 4-bit chunks)
+		// TEST CASE 2: South to North (Port 20 → Port 24)
 		// ====================================================================
-		$display("\n[PHASE 5] Injecting TAIL Flit at in03");
-		$display("------------------------------------");
-		$display("[CYCLE %0d] Starting TAIL flit serialization (16 cycles)...", cycle_count);
-		
-		inject_flit(expected_tail, 2'b00);
-		$display("[CYCLE %0d] TAIL flit injection complete", cycle_count);
+		$display("\n========================================");
+		$display("TEST CASE 2: South to North");
+		$display("========================================");
+		send_packet(2'd1, 2'd1, 2'd3, 2'd1, 7'd2, 48'hBEEF_2222_0001, 48'hBEEF_2222_0002, 48'hBEEF_2222_0003, 2'b00);
+		packets_sent = packets_sent + 1;
+		verify_complete_packet(2'd3,
+			create_flit(3'd4, 3'd2, 3'b000, 7'd2, 48'hBEEF_2222_0001),
+			create_flit(3'd4, 3'd2, 3'b001, 7'd2, 48'hBEEF_2222_0002),
+			create_flit(3'd4, 3'd2, 3'b010, 7'd2, 48'hBEEF_2222_0003),
+			250);
+		repeat(10) @(posedge clk);
 		
 		// ====================================================================
-		// Phase 6: Wait for Packet to Traverse Network
+		// TEST CASE 3: East to West (Port 41 → Port 01)
 		// ====================================================================
-		$display("\n[PHASE 6] Waiting for packet to traverse network...");
-		$display("------------------------------------");
+		$display("\n========================================");
+		$display("TEST CASE 3: East to West");
+		$display("========================================");
+		send_packet(2'd2, 2'd0, 2'd0, 2'd0, 7'd3, 48'hCAFE_3333_0001, 48'hCAFE_3333_0002, 48'hCAFE_3333_0003, 2'b00);
+		packets_sent = packets_sent + 1;
+		verify_complete_packet(2'd0,
+			create_flit(3'd1, 3'd0, 3'b000, 7'd3, 48'hCAFE_3333_0001),
+			create_flit(3'd1, 3'd0, 3'b001, 7'd3, 48'hCAFE_3333_0002),
+			create_flit(3'd1, 3'd0, 3'b010, 7'd3, 48'hCAFE_3333_0003),
+			250);
+		repeat(10) @(posedge clk);
 		
-		// Wait up to 500 cycles for packet to arrive (extra time to be certain)
-		begin : wait_loop
-			integer i;
-			for (i = 0; i < 500; i = i + 1) begin
-				@(posedge clk);
-				if (tail_received) begin
-					$display("\nPacket fully received after %0d cycles", cycle_count);
-					disable wait_loop;
-				end
+		// ====================================================================
+		// TEST CASE 4: North to South (Port 34 → Port 30)
+		// ====================================================================
+		$display("\n========================================");
+		$display("TEST CASE 4: North to South");
+		$display("========================================");
+		send_packet(2'd3, 2'd2, 2'd1, 2'd2, 7'd4, 48'hDEAD_4444_0001, 48'hDEAD_4444_0002, 48'hDEAD_4444_0003, 2'b00);
+		packets_sent = packets_sent + 1;
+		verify_complete_packet(2'd1,
+			create_flit(3'd0, 3'd3, 3'b000, 7'd4, 48'hDEAD_4444_0001),
+			create_flit(3'd0, 3'd3, 3'b001, 7'd4, 48'hDEAD_4444_0002),
+			create_flit(3'd0, 3'd3, 3'b010, 7'd4, 48'hDEAD_4444_0003),
+			250);
+		repeat(10) @(posedge clk);
+		
+		// ====================================================================
+		// TEST CASE 5: Overlapping Traffic - West->East + South->North
+		// ====================================================================
+		$display("\n========================================");
+		$display("TEST CASE 5: Overlapping Traffic (Same VC)");
+		$display("Path 1: West(02) -> East(42) via (1,2)->(2,2)->(3,2)");
+		$display("Path 2: South(20) -> North(24) via (2,1)->(2,2)->(2,3)");
+		$display("*** Paths intersect at router (2,2) ***");
+		$display("========================================");
+		
+		configure_ports(2'd1, 2'd1, 2'd1, 2'd1);
+		
+		/*
+		fork
+			begin
+				$display("\n[CYCLE %0d] [Packet #5] Starting injection: West(02) -> East(42), VC=0", cycle_count);
+				send_packet_west(2'd1, 2'd2, 2'd1, 7'd5, 48'hAAAA_5555_0001, 48'hAAAA_5555_0002, 48'hAAAA_5555_0003, 2'b00);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #5] Injection complete", cycle_count);
 			end
-		end
+			begin
+				repeat(10) @(posedge clk);
+				$display("\n[CYCLE %0d] [Packet #6] Starting injection: South(20) -> North(24), VC=0", cycle_count);
+				send_packet_south(2'd1, 2'd3, 2'd1, 7'd6, 48'hBBBB_6666_0001, 48'hBBBB_6666_0002, 48'hBBBB_6666_0003, 2'b00);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #6] Injection complete", cycle_count);
+			end
+		join
+		
+		$display("\n[CYCLE %0d] Both packets injected, now verifying...", cycle_count);
+		verify_complete_packet(2'd2,
+			create_flit(3'd2, 3'd4, 3'b000, 7'd5, 48'hAAAA_5555_0001),
+			create_flit(3'd2, 3'd4, 3'b001, 7'd5, 48'hAAAA_5555_0002),
+			create_flit(3'd2, 3'd4, 3'b010, 7'd5, 48'hAAAA_5555_0003),
+			250);
+		verify_complete_packet(2'd3,
+			create_flit(3'd4, 3'd2, 3'b000, 7'd6, 48'hBBBB_6666_0001),
+			create_flit(3'd4, 3'd2, 3'b001, 7'd6, 48'hBBBB_6666_0002),
+			create_flit(3'd4, 3'd2, 3'b010, 7'd6, 48'hBBBB_6666_0003),
+			250); */
+		
+		clear_all_complete_flags();
+		
+		fork
+			begin
+				#10
+				verify_complete_packet(2'd2,
+				create_flit(3'd2, 3'd4, 3'b000, 7'd5, 48'hAAAA_5555_0001),
+				create_flit(3'd2, 3'd4, 3'b001, 7'd5, 48'hAAAA_5555_0002),
+				create_flit(3'd2, 3'd4, 3'b010, 7'd5, 48'hAAAA_5555_0003),
+				250);
+			end
+			begin
+				#10
+				verify_complete_packet(2'd3,
+				create_flit(3'd4, 3'd2, 3'b000, 7'd6, 48'hBBBB_6666_0001),
+				create_flit(3'd4, 3'd2, 3'b001, 7'd6, 48'hBBBB_6666_0002),
+				create_flit(3'd4, 3'd2, 3'b010, 7'd6, 48'hBBBB_6666_0003),
+				250);
+			end
+			begin
+				$display("\n[CYCLE %0d] [Packet #5] Starting injection: West(02) -> East(42), VC=0", cycle_count);
+				send_packet_west(2'd1, 2'd2, 2'd1, 7'd5, 48'hAAAA_5555_0001, 48'hAAAA_5555_0002, 48'hAAAA_5555_0003, 2'b00);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #5] Injection complete", cycle_count);
+			end
+			begin
+				repeat(10) @(posedge clk);
+				$display("\n[CYCLE %0d] [Packet #6] Starting injection: South(20) -> North(24), VC=0", cycle_count);
+				send_packet_south(2'd1, 2'd3, 2'd1, 7'd6, 48'hBBBB_6666_0001, 48'hBBBB_6666_0002, 48'hBBBB_6666_0003, 2'b00);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #6] Injection complete", cycle_count);
+			end
+		
+		
+		
+		join
+		repeat(10) @(posedge clk);
 		
 		// ====================================================================
-		// Phase 7: Results
+		// TEST CASE 6: Intersecting Paths
 		// ====================================================================
-		$display("\n[PHASE 7] Test Results");
-		$display("------------------------------------");
+		$display("\n========================================");
+		$display("TEST CASE 6: Intersecting Paths (Same VC)");
+		$display("Path 1: West(01) -> East(43) via (1,1)->(2,1)->(3,1)->(3,2)->(3,3)");
+		$display("Path 2: South(30) -> North(14) via (3,1)->(2,1)->(1,1)->(1,2)->(1,3)");
+		$display("*** Paths intersect at routers (1,1), (2,1), and (3,1) ***");
+		$display("========================================");
 		
-		if (tail_received) begin
-			$display("TEST PASSED");
-			$display("All flits received correctly at out43");
+		configure_ports(2'd0, 2'd2, 2'd2, 2'd0);
+		clear_all_complete_flags();
+		fork
+			begin
+				#10
+				verify_complete_packet(2'd2,
+				create_flit(3'd3, 3'd4, 3'b000, 7'd7, 48'hCCCC_7777_0001),
+				create_flit(3'd3, 3'd4, 3'b001, 7'd7, 48'hCCCC_7777_0002),
+				create_flit(3'd3, 3'd4, 3'b010, 7'd7, 48'hCCCC_7777_0003),
+				250);
+			end
+			begin
+				#10
+				verify_complete_packet(2'd3,
+				create_flit(3'd4, 3'd1, 3'b000, 7'd8, 48'hDDDD_8888_0001),
+				create_flit(3'd4, 3'd1, 3'b001, 7'd8, 48'hDDDD_8888_0002),
+				create_flit(3'd4, 3'd1, 3'b010, 7'd8, 48'hDDDD_8888_0003),
+				250);
+			end
+
+			begin
+				$display("\n[CYCLE %0d] [Packet #7] Starting injection: West(01) -> East(43), VC=0", cycle_count);
+				send_packet_west(2'd0, 2'd2, 2'd2, 7'd7, 48'hCCCC_7777_0001, 48'hCCCC_7777_0002, 48'hCCCC_7777_0003, 2'b00);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #7] Injection complete", cycle_count);
+			end
+			begin
+				repeat(10) @(posedge clk);
+				$display("\n[CYCLE %0d] [Packet #8] Starting injection: South(30) -> North(14), VC=0", cycle_count);
+				send_packet_south(2'd2, 2'd3, 2'd0, 7'd8, 48'hDDDD_8888_0001, 48'hDDDD_8888_0002, 48'hDDDD_8888_0003, 2'b00);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #8] Injection complete", cycle_count);
+			end
+		join
+		
+		/*
+		$display("\n[CYCLE %0d] Both packets injected, now verifying...", cycle_count);
+		verify_complete_packet(2'd2,
+			create_flit(3'd3, 3'd4, 3'b000, 7'd7, 48'hCCCC_7777_0001),
+			create_flit(3'd3, 3'd4, 3'b001, 7'd7, 48'hCCCC_7777_0002),
+			create_flit(3'd3, 3'd4, 3'b010, 7'd7, 48'hCCCC_7777_0003),
+			250);
+		verify_complete_packet(2'd3,
+			create_flit(3'd4, 3'd1, 3'b000, 7'd8, 48'hDDDD_8888_0001),
+			create_flit(3'd4, 3'd1, 3'b001, 7'd8, 48'hDDDD_8888_0002),
+			create_flit(3'd4, 3'd1, 3'b010, 7'd8, 48'hDDDD_8888_0003),
+			250); */
+		repeat(10) @(posedge clk);
+		
+		// ====================================================================
+		// TEST CASE 7: TRUE Contention - Same Output Port
+		// ====================================================================
+		$display("\n========================================");
+		$display("TEST CASE 7: TRUE Contention - Same Output Port");
+		$display("Packet #9:  West(02) -> East(42), VC=0, 5 BODY flits (LONG)");
+		$display("Packet #10: South(20) -> East(42), VC=0, 1 BODY flit (NORMAL)");
+		$display("*** BOTH packets need to exit EAST from router (2,2) ***");
+		$display("========================================");
+		
+		configure_ports(2'd1, 2'd1, 2'd1, 2'd1);
+		
+		// Enable debug for this test
+		enable_debug_monitor = 1;
+		clear_all_complete_flags();
+		fork
+			begin
+				$display("\n[CYCLE %0d] [Packet #9] Starting injection: West(02) -> East(42), VC=0, EXTENDED", cycle_count);
+				send_packet_west_multi_body(2'd1, 2'd2, 2'd1, 7'd9, 48'hAAAA_9999_0001, 48'hAAAA_9999_FFFF, 2'b00, 5);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #9] Injection complete (LONG)", cycle_count);
+			end
+			begin
+				repeat(10) @(posedge clk);
+				$display("\n[CYCLE %0d] [Packet #10] Starting injection: South(20) -> East(42), VC=0, NORMAL", cycle_count);
+				send_packet_south(2'd1, 2'd2, 2'd1, 7'd10, 48'hBBBB_AAAA_0001, 48'hBBBB_AAAA_0002, 48'hBBBB_AAAA_0003, 2'b00);
+				packets_sent = packets_sent + 1;
+				$display("[CYCLE %0d] [Packet #10] Injection complete (NORMAL)", cycle_count);
+			end
+			begin
+				repeat(20) @(posedge clk);
+				verify_complete_packet(2'd2,
+				create_flit(3'd2, 3'd4, 3'b000, 7'd9, 48'hAAAA_9999_0001),
+				create_flit(3'd2, 3'd4, 3'b001, 7'd9, 48'hB0D0_0000_0000),  // First body
+				create_flit(3'd2, 3'd4, 3'b010, 7'd9, 48'hAAAA_9999_FFFF),
+				500);
+		
+				// Verify packet #10 (normal 3-flit packet)
+				verify_complete_packet(2'd2,
+				create_flit(3'd2, 3'd4, 3'b000, 7'd10, 48'hBBBB_AAAA_0001),
+				create_flit(3'd2, 3'd4, 3'b001, 7'd10, 48'hBBBB_AAAA_0002),
+				create_flit(3'd2, 3'd4, 3'b010, 7'd10, 48'hBBBB_AAAA_0003),
+				500);
+			end
+		join
+		
+		$display("\n[CYCLE %0d] Both packets injected - BOTH competing for EAST output", cycle_count);
+		
+		// For packet #9 with 5 body flits, we expect: HEAD + 5*BODY + TAIL = 7 flits total
+		// But verify_complete_packet expects 3 flits (HEAD, BODY, TAIL)
+		// So for multi-body packets, we just verify the first 3 flits
+		$display("\n*** NOTE: Packet #9 has 7 flits total (1 HEAD + 5 BODY + 1 TAIL) ***");
+		$display("*** We'll verify HEAD, first BODY, and skip to TAIL verification ***");
+		
+		
+		// Verify packet #9 (just verify HEAD arrives, then wait for TAIL)
+		/*
+		verify_complete_packet(2'd2,
+			create_flit(3'd2, 3'd4, 3'b000, 7'd9, 48'hAAAA_9999_0001),
+			create_flit(3'd2, 3'd4, 3'b001, 7'd9, 48'hB0D0_0000_0000),  // First body
+			create_flit(3'd2, 3'd4, 3'b010, 7'd9, 48'hAAAA_9999_FFFF),
+			500);
+		
+		// Verify packet #10 (normal 3-flit packet)
+		verify_complete_packet(2'd2,
+			create_flit(3'd2, 3'd4, 3'b000, 7'd10, 48'hBBBB_AAAA_0001),
+			create_flit(3'd2, 3'd4, 3'b001, 7'd10, 48'hBBBB_AAAA_0002),
+			create_flit(3'd2, 3'd4, 3'b010, 7'd10, 48'hBBBB_AAAA_0003),
+			500); */
+		
+		enable_debug_monitor = 0;
+		repeat(10) @(posedge clk);
+		
+		// ====================================================================
+		// Final Results
+		// ====================================================================
+		repeat(5) @(posedge clk);
+		
+		$display("\n================================================================================");
+		$display("Test Results");
+		$display("================================================================================");
+		$display("Packets sent:     %0d", packets_sent);
+		$display("Packets received: %0d", packets_received);
+		$display("Packets verified: %0d", packets_verified);
+		$display("Packets failed:   %0d", packets_failed);
+		
+		if (packets_sent == packets_verified && packets_failed == 0) begin
+			$display("\n✓✓✓ ALL TESTS PASSED ✓✓✓");
+			$display("All %0d packets successfully routed and verified!", packets_sent);
 		end else begin
-			$display("TEST FAILED");
-			$display("Packet did not arrive within 500 cycles");
-			$display("Head received: %0d", head_received);
-			$display("Body received: %0d", body_received);
-			$display("Tail received: %0d", tail_received);
-			
-			// Debug information
-			$display("\n=== DEBUG INFORMATION ===");
-			$display("Deserializer d03:");
-			$display("  valid_out: %b", dut.d03.valid_out);
-			$display("  data_out: 0x%016h", dut.d03.data_out);
-			
-			$display("\nRouter 13 state:");
-			$display("  westIn_valid: %b", dut.r13.westIn_valid);
-			$display("  westIn: 0x%016h", dut.r13.westIn);
-			$display("  eastOut: 0x%016h", dut.r13.eastOut);
-			
-			$display("\nRouter 23 state:");
-			$display("  westIn_valid: %b", dut.r23.westIn_valid);
-			$display("  eastOut: 0x%016h", dut.r23.eastOut);
-			
-			$display("\nRouter 33 state:");
-			$display("  westIn_valid: %b", dut.r33.westIn_valid);
-			$display("  eastOut: 0x%016h", dut.r33.eastOut);
-			
-			$display("\nSerializer s43:");
-			$display("  valid_in: %b", dut.s43.valid_in);
-			$display("  data_in: 0x%016h", dut.s43.data_in);
-			$display("  transmitting: %b", dut.s43.transmitting);
+			$display("\n✗✗✗ SOME TESTS FAILED ✗✗✗");
+			if (packets_received != packets_sent)
+				$display("%0d packets lost!", packets_sent - packets_received);
+			if (packets_failed > 0)
+				$display("%0d packets had content mismatches!", packets_failed);
 		end
 		
-		// ====================================================================
-		// Finish Simulation
-		// ====================================================================
 		$display("\n================================================================================");
 		$display("Simulation Complete");
 		$display("================================================================================\n");
 		
-		#100;
+		// Clear all input signals
+		in_west_valid = 0;
+		in_south_valid = 0;
+		in_east_valid = 0;
+		in_north_valid = 0;
+		
+		repeat(50) @(posedge clk);
 		$finish;
 	end
 	
@@ -439,9 +1213,8 @@ module NoC_tb;
 	// Timeout Watchdog
 	// ========================================================================
 	initial begin
-		#100000;  // 100us timeout (longer for serialization overhead)
-		$display("\nERROR: Simulation timeout after 100us");
-		$display("Packet may be stuck in the network");
+		#300000;  // 300us timeout
+		$display("\n✗✗✗ ERROR: Simulation timeout ✗✗✗");
 		$finish;
 	end
 

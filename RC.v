@@ -1,4 +1,3 @@
-
 // Packet Format Definition
 // ============================================================================
 // [63:61] - Destination Y coordinate (3 bits: 0-3)

@@ -1,6 +1,5 @@
-
 // ============================================================================
-// Virtual Channel Allocator (VCA)
+// Virtual Channel Allocator (VCA) - FIXED grant mapping
 // ============================================================================
 module VCA (
 	input wire clk,
@@ -11,6 +10,13 @@ module VCA (
 	input wire [1:0] south_buf_vc_status,
 	input wire [1:0] west_buf_vc_status,
 	input wire [1:0] local_buf_vc_status,
+	
+	// ADDED: Which INPUT VC is at RC stage for each buffer
+	input wire [1:0] north_buf_rc_vc,
+	input wire [1:0] east_buf_rc_vc,
+	input wire [1:0] south_buf_rc_vc,
+	input wire [1:0] west_buf_rc_vc,
+	input wire [1:0] local_buf_rc_vc,
 	
 	input wire [4:0] north_route,
 	input wire [4:0] east_route,
@@ -60,7 +66,7 @@ module VCA (
 	// ========================================================================
 	// Round-Robin Priority State for Each Output Port
 	// ========================================================================
-	reg [2:0] north_last_grant;  // Which input (0-4) was last granted to north output
+	reg [2:0] north_last_grant;
 	reg [2:0] east_last_grant;
 	reg [2:0] south_last_grant;
 	reg [2:0] west_last_grant;
@@ -111,14 +117,14 @@ module VCA (
 			local_last_grant <= 3'd0;
 		end else begin
 			// ================================================================
-			// FIXED: Handle simultaneous credit increment/decrement
+			// Handle simultaneous credit increment/decrement
 			// ================================================================
 			// North VC0
 			case ({north_vc0_inc, north_vc0_dec})
 				2'b00: north_vc0_credits <= north_vc0_credits;
 				2'b01: north_vc0_credits <= north_vc0_credits - 3'd1;
 				2'b10: north_vc0_credits <= north_vc0_credits + 3'd1;
-				2'b11: north_vc0_credits <= north_vc0_credits;  // No net change
+				2'b11: north_vc0_credits <= north_vc0_credits;
 			endcase
 			
 			// North VC1
@@ -196,35 +202,35 @@ module VCA (
 			// ================================================================
 			// Update Round-Robin State
 			// ================================================================
-			if (north_buf_vc_grant != 2'b00) north_last_grant <= 3'd0;
+			if (north_buf_vc_grant != 2'b00 && north_route[4:2] == 3'b000) north_last_grant <= 3'd0;
 			else if (east_buf_vc_grant != 2'b00 && east_route[4:2] == 3'b000) north_last_grant <= 3'd1;
 			else if (south_buf_vc_grant != 2'b00 && south_route[4:2] == 3'b000) north_last_grant <= 3'd2;
 			else if (west_buf_vc_grant != 2'b00 && west_route[4:2] == 3'b000) north_last_grant <= 3'd3;
 			else if (local_buf_vc_grant != 2'b00 && local_route[4:2] == 3'b000) north_last_grant <= 3'd4;
 			
 			if (north_buf_vc_grant != 2'b00 && north_route[4:2] == 3'b001) east_last_grant <= 3'd0;
-			else if (east_buf_vc_grant != 2'b00) east_last_grant <= 3'd1;
+			else if (east_buf_vc_grant != 2'b00 && east_route[4:2] == 3'b001) east_last_grant <= 3'd1;
 			else if (south_buf_vc_grant != 2'b00 && south_route[4:2] == 3'b001) east_last_grant <= 3'd2;
 			else if (west_buf_vc_grant != 2'b00 && west_route[4:2] == 3'b001) east_last_grant <= 3'd3;
 			else if (local_buf_vc_grant != 2'b00 && local_route[4:2] == 3'b001) east_last_grant <= 3'd4;
 			
 			if (north_buf_vc_grant != 2'b00 && north_route[4:2] == 3'b010) south_last_grant <= 3'd0;
 			else if (east_buf_vc_grant != 2'b00 && east_route[4:2] == 3'b010) south_last_grant <= 3'd1;
-			else if (south_buf_vc_grant != 2'b00) south_last_grant <= 3'd2;
+			else if (south_buf_vc_grant != 2'b00 && south_route[4:2] == 3'b010) south_last_grant <= 3'd2;
 			else if (west_buf_vc_grant != 2'b00 && west_route[4:2] == 3'b010) south_last_grant <= 3'd3;
 			else if (local_buf_vc_grant != 2'b00 && local_route[4:2] == 3'b010) south_last_grant <= 3'd4;
 			
 			if (north_buf_vc_grant != 2'b00 && north_route[4:2] == 3'b011) west_last_grant <= 3'd0;
 			else if (east_buf_vc_grant != 2'b00 && east_route[4:2] == 3'b011) west_last_grant <= 3'd1;
 			else if (south_buf_vc_grant != 2'b00 && south_route[4:2] == 3'b011) west_last_grant <= 3'd2;
-			else if (west_buf_vc_grant != 2'b00) west_last_grant <= 3'd3;
+			else if (west_buf_vc_grant != 2'b00 && west_route[4:2] == 3'b011) west_last_grant <= 3'd3;
 			else if (local_buf_vc_grant != 2'b00 && local_route[4:2] == 3'b011) west_last_grant <= 3'd4;
 			
 			if (north_buf_vc_grant != 2'b00 && north_route[4:2] == 3'b100) local_last_grant <= 3'd0;
 			else if (east_buf_vc_grant != 2'b00 && east_route[4:2] == 3'b100) local_last_grant <= 3'd1;
 			else if (south_buf_vc_grant != 2'b00 && south_route[4:2] == 3'b100) local_last_grant <= 3'd2;
 			else if (west_buf_vc_grant != 2'b00 && west_route[4:2] == 3'b100) local_last_grant <= 3'd3;
-			else if (local_buf_vc_grant != 2'b00) local_last_grant <= 3'd4;
+			else if (local_buf_vc_grant != 2'b00 && local_route[4:2] == 3'b100) local_last_grant <= 3'd4;
 		end
 	end
 	
@@ -282,26 +288,24 @@ module VCA (
 	wire local_req_local = local_route_valid && (local_route[4:2] == 3'b100);
 	
 	// ========================================================================
-	// Round-Robin Arbitration (replaces fixed priority)
+	// Round-Robin Arbitration
 	// ========================================================================
 	reg [1:0] north_grant, east_grant, south_grant, west_grant, local_grant;
 	
-	// Helper function to get next requester in round-robin order
 	function [2:0] get_next_requester;
 		input [2:0] last_grant;
 		input north_req, east_req, south_req, west_req, local_req;
 		begin
-			// Try inputs in order starting from the one after last_grant
 			case (last_grant)
-				3'd0: begin  // Last was north, try east->south->west->local->north
+				3'd0: begin
 					if (east_req) get_next_requester = 3'd1;
 					else if (south_req) get_next_requester = 3'd2;
 					else if (west_req) get_next_requester = 3'd3;
 					else if (local_req) get_next_requester = 3'd4;
 					else if (north_req) get_next_requester = 3'd0;
-					else get_next_requester = 3'd7;  // No request
+					else get_next_requester = 3'd7;
 				end
-				3'd1: begin  // Last was east
+				3'd1: begin
 					if (south_req) get_next_requester = 3'd2;
 					else if (west_req) get_next_requester = 3'd3;
 					else if (local_req) get_next_requester = 3'd4;
@@ -309,7 +313,7 @@ module VCA (
 					else if (east_req) get_next_requester = 3'd1;
 					else get_next_requester = 3'd7;
 				end
-				3'd2: begin  // Last was south
+				3'd2: begin
 					if (west_req) get_next_requester = 3'd3;
 					else if (local_req) get_next_requester = 3'd4;
 					else if (north_req) get_next_requester = 3'd0;
@@ -317,7 +321,7 @@ module VCA (
 					else if (south_req) get_next_requester = 3'd2;
 					else get_next_requester = 3'd7;
 				end
-				3'd3: begin  // Last was west
+				3'd3: begin
 					if (local_req) get_next_requester = 3'd4;
 					else if (north_req) get_next_requester = 3'd0;
 					else if (east_req) get_next_requester = 3'd1;
@@ -325,7 +329,7 @@ module VCA (
 					else if (west_req) get_next_requester = 3'd3;
 					else get_next_requester = 3'd7;
 				end
-				default: begin  // Last was local or initial
+				default: begin
 					if (north_req) get_next_requester = 3'd0;
 					else if (east_req) get_next_requester = 3'd1;
 					else if (south_req) get_next_requester = 3'd2;
@@ -350,6 +354,9 @@ module VCA (
 	assign local_winner = get_next_requester(local_last_grant, north_req_local, east_req_local, 
 	                                          south_req_local, west_req_local, local_req_local);
 	
+	// ========================================================================
+	// Grant Generation - Check OUTPUT VC availability
+	// ========================================================================
 	always @(*) begin
 		north_grant = 2'b00;
 		east_grant = 2'b00;
@@ -357,67 +364,95 @@ module VCA (
 		west_grant = 2'b00;
 		local_grant = 2'b00;
 		
-		// Grant to winner if VC available
-		if (north_winner == 3'd0 && north_vc_available[north_route[1:0]]) north_grant = 2'b01;
-		else if (north_winner == 3'd1 && north_vc_available[east_route[1:0]]) north_grant = 2'b01;
-		else if (north_winner == 3'd2 && north_vc_available[south_route[1:0]]) north_grant = 2'b01;
-		else if (north_winner == 3'd3 && north_vc_available[west_route[1:0]]) north_grant = 2'b01;
-		else if (north_winner == 3'd4 && north_vc_available[local_route[1:0]]) north_grant = 2'b01;
+		// For each output, check if requested OUTPUT VC is available
+		// But grant the INPUT VC that is making the request
+		if (north_winner == 3'd0 && north_vc_available[north_route[1:0]]) 
+			north_grant = 2'b01 << north_buf_rc_vc[0];
+		else if (north_winner == 3'd1 && north_vc_available[east_route[1:0]]) 
+			north_grant = 2'b01 << east_buf_rc_vc[0];
+		else if (north_winner == 3'd2 && north_vc_available[south_route[1:0]]) 
+			north_grant = 2'b01 << south_buf_rc_vc[0];
+		else if (north_winner == 3'd3 && north_vc_available[west_route[1:0]]) 
+			north_grant = 2'b01 << west_buf_rc_vc[0];
+		else if (north_winner == 3'd4 && north_vc_available[local_route[1:0]]) 
+			north_grant = 2'b01 << local_buf_rc_vc[0];
 		
-		if (east_winner == 3'd0 && east_vc_available[north_route[1:0]]) east_grant = 2'b01;
-		else if (east_winner == 3'd1 && east_vc_available[east_route[1:0]]) east_grant = 2'b01;
-		else if (east_winner == 3'd2 && east_vc_available[south_route[1:0]]) east_grant = 2'b01;
-		else if (east_winner == 3'd3 && east_vc_available[west_route[1:0]]) east_grant = 2'b01;
-		else if (east_winner == 3'd4 && east_vc_available[local_route[1:0]]) east_grant = 2'b01;
+		if (east_winner == 3'd0 && east_vc_available[north_route[1:0]]) 
+			east_grant = 2'b01 << north_buf_rc_vc[0];
+		else if (east_winner == 3'd1 && east_vc_available[east_route[1:0]]) 
+			east_grant = 2'b01 << east_buf_rc_vc[0];
+		else if (east_winner == 3'd2 && east_vc_available[south_route[1:0]]) 
+			east_grant = 2'b01 << south_buf_rc_vc[0];
+		else if (east_winner == 3'd3 && east_vc_available[west_route[1:0]]) 
+			east_grant = 2'b01 << west_buf_rc_vc[0];
+		else if (east_winner == 3'd4 && east_vc_available[local_route[1:0]]) 
+			east_grant = 2'b01 << local_buf_rc_vc[0];
 		
-		if (south_winner == 3'd0 && south_vc_available[north_route[1:0]]) south_grant = 2'b01;
-		else if (south_winner == 3'd1 && south_vc_available[east_route[1:0]]) south_grant = 2'b01;
-		else if (south_winner == 3'd2 && south_vc_available[south_route[1:0]]) south_grant = 2'b01;
-		else if (south_winner == 3'd3 && south_vc_available[west_route[1:0]]) south_grant = 2'b01;
-		else if (south_winner == 3'd4 && south_vc_available[local_route[1:0]]) south_grant = 2'b01;
+		if (south_winner == 3'd0 && south_vc_available[north_route[1:0]]) 
+			south_grant = 2'b01 << north_buf_rc_vc[0];
+		else if (south_winner == 3'd1 && south_vc_available[east_route[1:0]]) 
+			south_grant = 2'b01 << east_buf_rc_vc[0];
+		else if (south_winner == 3'd2 && south_vc_available[south_route[1:0]]) 
+			south_grant = 2'b01 << south_buf_rc_vc[0];
+		else if (south_winner == 3'd3 && south_vc_available[west_route[1:0]]) 
+			south_grant = 2'b01 << west_buf_rc_vc[0];
+		else if (south_winner == 3'd4 && south_vc_available[local_route[1:0]]) 
+			south_grant = 2'b01 << local_buf_rc_vc[0];
 		
-		if (west_winner == 3'd0 && west_vc_available[north_route[1:0]]) west_grant = 2'b01;
-		else if (west_winner == 3'd1 && west_vc_available[east_route[1:0]]) west_grant = 2'b01;
-		else if (west_winner == 3'd2 && west_vc_available[south_route[1:0]]) west_grant = 2'b01;
-		else if (west_winner == 3'd3 && west_vc_available[west_route[1:0]]) west_grant = 2'b01;
-		else if (west_winner == 3'd4 && west_vc_available[local_route[1:0]]) west_grant = 2'b01;
+		if (west_winner == 3'd0 && west_vc_available[north_route[1:0]]) 
+			west_grant = 2'b01 << north_buf_rc_vc[0];
+		else if (west_winner == 3'd1 && west_vc_available[east_route[1:0]]) 
+			west_grant = 2'b01 << east_buf_rc_vc[0];
+		else if (west_winner == 3'd2 && west_vc_available[south_route[1:0]]) 
+			west_grant = 2'b01 << south_buf_rc_vc[0];
+		else if (west_winner == 3'd3 && west_vc_available[west_route[1:0]]) 
+			west_grant = 2'b01 << west_buf_rc_vc[0];
+		else if (west_winner == 3'd4 && west_vc_available[local_route[1:0]]) 
+			west_grant = 2'b01 << local_buf_rc_vc[0];
 		
-		if (local_winner == 3'd0 && local_vc_available[north_route[1:0]]) local_grant = 2'b01;
-		else if (local_winner == 3'd1 && local_vc_available[east_route[1:0]]) local_grant = 2'b01;
-		else if (local_winner == 3'd2 && local_vc_available[south_route[1:0]]) local_grant = 2'b01;
-		else if (local_winner == 3'd3 && local_vc_available[west_route[1:0]]) local_grant = 2'b01;
-		else if (local_winner == 3'd4 && local_vc_available[local_route[1:0]]) local_grant = 2'b01;
+		if (local_winner == 3'd0 && local_vc_available[north_route[1:0]]) 
+			local_grant = 2'b01 << north_buf_rc_vc[0];
+		else if (local_winner == 3'd1 && local_vc_available[east_route[1:0]]) 
+			local_grant = 2'b01 << east_buf_rc_vc[0];
+		else if (local_winner == 3'd2 && local_vc_available[south_route[1:0]]) 
+			local_grant = 2'b01 << south_buf_rc_vc[0];
+		else if (local_winner == 3'd3 && local_vc_available[west_route[1:0]]) 
+			local_grant = 2'b01 << west_buf_rc_vc[0];
+		else if (local_winner == 3'd4 && local_vc_available[local_route[1:0]]) 
+			local_grant = 2'b01 << local_buf_rc_vc[0];
 	end
 	
-	// Map grants back to buffers
-	assign north_buf_vc_grant = (north_req_north && north_grant != 2'b00) ? north_grant :
-	                             (north_req_east && east_grant != 2'b00) ? east_grant :
-	                             (north_req_south && south_grant != 2'b00) ? south_grant :
-	                             (north_req_west && west_grant != 2'b00) ? west_grant :
-	                             (north_req_local && local_grant != 2'b00) ? local_grant : 2'b00;
+	// ========================================================================
+	// Map grants back to buffers - FIXED to check winner instead of request
+	// ========================================================================
+	assign north_buf_vc_grant = (north_winner == 3'd0) ? north_grant :
+	                             (east_winner == 3'd0) ? east_grant :
+	                             (south_winner == 3'd0) ? south_grant :
+	                             (west_winner == 3'd0) ? west_grant :
+	                             (local_winner == 3'd0) ? local_grant : 2'b00;
 	
-	assign east_buf_vc_grant = (east_req_north && north_grant != 2'b00) ? north_grant :
-	                            (east_req_east && east_grant != 2'b00) ? east_grant :
-	                            (east_req_south && south_grant != 2'b00) ? south_grant :
-	                            (east_req_west && west_grant != 2'b00) ? west_grant :
-	                            (east_req_local && local_grant != 2'b00) ? local_grant : 2'b00;
+	assign east_buf_vc_grant = (north_winner == 3'd1) ? north_grant :
+	                            (east_winner == 3'd1) ? east_grant :
+	                            (south_winner == 3'd1) ? south_grant :
+	                            (west_winner == 3'd1) ? west_grant :
+	                            (local_winner == 3'd1) ? local_grant : 2'b00;
 	
-	assign south_buf_vc_grant = (south_req_north && north_grant != 2'b00) ? north_grant :
-	                             (south_req_east && east_grant != 2'b00) ? east_grant :
-	                             (south_req_south && south_grant != 2'b00) ? south_grant :
-	                             (south_req_west && west_grant != 2'b00) ? west_grant :
-	                             (south_req_local && local_grant != 2'b00) ? local_grant : 2'b00;
+	assign south_buf_vc_grant = (north_winner == 3'd2) ? north_grant :
+	                             (east_winner == 3'd2) ? east_grant :
+	                             (south_winner == 3'd2) ? south_grant :
+	                             (west_winner == 3'd2) ? west_grant :
+	                             (local_winner == 3'd2) ? local_grant : 2'b00;
 	
-	assign west_buf_vc_grant = (west_req_north && north_grant != 2'b00) ? north_grant :
-	                            (west_req_east && east_grant != 2'b00) ? east_grant :
-	                            (west_req_south && south_grant != 2'b00) ? south_grant :
-	                            (west_req_west && west_grant != 2'b00) ? west_grant :
-	                            (west_req_local && local_grant != 2'b00) ? local_grant : 2'b00;
+	assign west_buf_vc_grant = (north_winner == 3'd3) ? north_grant :
+	                            (east_winner == 3'd3) ? east_grant :
+	                            (south_winner == 3'd3) ? south_grant :
+	                            (west_winner == 3'd3) ? west_grant :
+	                            (local_winner == 3'd3) ? local_grant : 2'b00;
 	
-	assign local_buf_vc_grant = (local_req_north && north_grant != 2'b00) ? north_grant :
-	                             (local_req_east && east_grant != 2'b00) ? east_grant :
-	                             (local_req_south && south_grant != 2'b00) ? south_grant :
-	                             (local_req_west && west_grant != 2'b00) ? west_grant :
-	                             (local_req_local && local_grant != 2'b00) ? local_grant : 2'b00;
+	assign local_buf_vc_grant = (north_winner == 3'd4) ? north_grant :
+	                             (east_winner == 3'd4) ? east_grant :
+	                             (south_winner == 3'd4) ? south_grant :
+	                             (west_winner == 3'd4) ? west_grant :
+	                             (local_winner == 3'd4) ? local_grant : 2'b00;
 
 endmodule

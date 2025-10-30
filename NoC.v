@@ -527,5 +527,15 @@ module NoC (
         .north_credits_out(), .east_credits_out(),
         .south_credits_out(c_33to32), .west_credits_out(c_33to23), .local_credits_out()
     );
+	 
+	 // DEBUG: Monitor east output
+always @(posedge clk) begin
+    if (!rst) begin
+        if (ser_out43_valid) begin
+            $display("[NOC OUTPUT] Cycle %0d: ser_out43_valid=1, ser_out43=0x%h, east_sel=%b, out_east_valid=%b", 
+                     $time/10, ser_out43, east_sel, out_east_valid);
+        end
+    end
+end
 
 endmodule
