@@ -1,102 +1,88 @@
-module Serializer (
-    input wire clk,
-    input wire rst,
-    input wire [63:0] data_in,
-    input wire valid_in,
-    input wire [1:0] vc_in,
-    output reg [3:0] data_out,
-    output reg valid_out,
-    output reg [1:0] vc_out
+module Serializer #(
+    parameter FIFO_DEPTH = 4,
+    parameter FIFO_ADDRW = 4
+) (
+    input  wire        clk,
+    input  wire        rst,
+    input  wire [63:0] data_in,
+    input  wire        valid_in,
+    input  wire [1:0]  vc_in,
+    output reg  [3:0]  data_out,
+    output reg         valid_out,
+    output reg  [1:0]  vc_out
 );
     reg [63:0] buffer;
-    reg [3:0] count;
-    reg [1:0] vc_stored;
-    reg transmitting;
-    
-    // 2-deep FIFO
-    reg [63:0] fifo [0:1];
-    reg [1:0] fifo_vc [0:1];
-    reg [1:0] fifo_count;
-    
-    wire will_enqueue = valid_in && (fifo_count < 2'd2);
-    wire will_dequeue = (fifo_count > 0) && !transmitting;
-    
+    reg [3:0]  count;
+    reg [1:0]  vc_stored;
+    reg        transmitting;
+
+    // force into registers (no RAM)
+    (* ramstyle = "logic" *) reg [63:0] fifo_data [0:FIFO_DEPTH-1];
+    (* ramstyle = "logic" *) reg [1:0]  fifo_vc   [0:FIFO_DEPTH-1];
+
+    reg [FIFO_ADDRW-1:0] head;
+    reg [FIFO_ADDRW-1:0] tail;
+    reg [FIFO_ADDRW:0]   fifo_count;
+
+    wire fifo_full  = (fifo_count == FIFO_DEPTH);
+    wire fifo_empty = (fifo_count == 0);
+
+    wire do_enqueue = valid_in && !fifo_full;
+    wire do_dequeue = !transmitting && !fifo_empty;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            buffer <= 64'b0;
-            count <= 4'b0;
-            data_out <= 4'b0;
-            valid_out <= 1'b0;
-            vc_out <= 2'b0;
-            vc_stored <= 2'b0;
-            transmitting <= 1'b0;
-            fifo_count <= 2'b0;
+            buffer      <= 64'b0;
+            count       <= 4'b0;
+            data_out    <= 4'b0;
+            valid_out   <= 1'b0;
+            vc_out      <= 2'b0;
+            vc_stored   <= 2'b0;
+            transmitting<= 1'b0;
+            head        <= {FIFO_ADDRW{1'b0}};
+            tail        <= {FIFO_ADDRW{1'b0}};
+            fifo_count  <= { (FIFO_ADDRW+1){1'b0} };
         end else begin
-            // Handle enqueue (only if not simultaneously dequeuing with count==1)
-            if (will_enqueue && !(will_dequeue && fifo_count == 2'd1)) begin
-                fifo[fifo_count] <= data_in;
-                fifo_vc[fifo_count] <= vc_in;
-                $display("[SERIALIZER @ %m] Cycle %0d: BUFFERED flit=0x%h, vc=%0d", 
-                         $time/10, data_in, vc_in);
+            // enqueue
+            if (do_enqueue) begin
+                fifo_data[tail] <= data_in;
+                fifo_vc  [tail] <= vc_in;
+                tail <= (tail == FIFO_DEPTH-1) ? {FIFO_ADDRW{1'b0}} : tail + 1'b1;
             end
-            
-            // Handle dequeue and start transmitting
-            if (will_dequeue) begin
-                buffer <= fifo[0];
-                vc_stored <= fifo_vc[0];
-                transmitting <= 1'b1;
-                count <= 4'd1;
-                
-                data_out <= fifo[0][3:0];
-                valid_out <= 1'b1;
-                vc_out <= fifo_vc[0];
-                
-                // Handle FIFO shift logic
-                if (will_enqueue && fifo_count == 2'd1) begin
-                    // Special case: simultaneous enqueue+dequeue with 1 item
-                    // New data should go directly to fifo[0]
-                    fifo[0] <= data_in;
-                    fifo_vc[0] <= vc_in;
-                    $display("[SERIALIZER @ %m] Cycle %0d: BUFFERED flit=0x%h, vc=%0d", 
-                             $time/10, data_in, vc_in);
-                end else begin
-                    // Normal case: shift fifo[1] to fifo[0]
-                    fifo[0] <= fifo[1];
-                    fifo_vc[0] <= fifo_vc[1];
-                end
-                
-                $display("[SERIALIZER @ %m] Cycle %0d: LOADING flit=0x%h, vc=%0d", 
-                         $time/10, fifo[0], fifo_vc[0]);
+
+            // dequeue → start tx
+            if (do_dequeue) begin
+                buffer      <= fifo_data[head];
+                vc_stored   <= fifo_vc[head];
+                transmitting<= 1'b1;
+                count       <= 4'd1;
+
+                data_out    <= fifo_data[head][3:0];
+                valid_out   <= 1'b1;
+                vc_out      <= fifo_vc[head];
+
+                head <= (head == FIFO_DEPTH-1) ? {FIFO_ADDRW{1'b0}} : head + 1'b1;
             end else if (transmitting) begin
-                // Continue transmitting
-                data_out <= buffer[count*4 +: 4];
+                data_out  <= buffer[count*4 +: 4];
                 valid_out <= 1'b1;
-                vc_out <= vc_stored;
-                
+                vc_out    <= vc_stored;
+
                 if (count == 4'd15) begin
                     transmitting <= 1'b0;
-                    count <= 4'b0;
+                    count        <= 4'd0;
                 end else begin
                     count <= count + 1'b1;
                 end
-                
-                $display("[SERIALIZER @ %m] Cycle %0d: TRANSMITTING chunk[%0d]=0x%h", 
-                         $time/10, (count == 4'd1) ? 0 : count-1, data_out);
             end else begin
                 valid_out <= 1'b0;
             end
-            
-            // Update fifo_count based on both operations
-            if (will_enqueue && will_dequeue) begin
-                // Both happen: count stays same
-                fifo_count <= fifo_count;
-            end else if (will_enqueue) begin
-                // Only enqueue
-                fifo_count <= fifo_count + 1'b1;
-            end else if (will_dequeue) begin
-                // Only dequeue
-                fifo_count <= fifo_count - 1'b1;
-            end
+
+            // count
+            case ({do_enqueue, do_dequeue})
+                2'b10: fifo_count <= fifo_count + 1'b1;
+                2'b01: fifo_count <= fifo_count - 1'b1;
+                default: fifo_count <= fifo_count;
+            endcase
         end
     end
 endmodule

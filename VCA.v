@@ -1,5 +1,6 @@
+
 // ============================================================================
-// Virtual Channel Allocator (VCA) - FIXED grant mapping
+// Virtual Channel Allocator (VCA) - FIXED to use rc_vc for new, sa_vc for continuing
 // ============================================================================
 module VCA (
 	input wire clk,
@@ -11,12 +12,26 @@ module VCA (
 	input wire [1:0] west_buf_vc_status,
 	input wire [1:0] local_buf_vc_status,
 	
-	// ADDED: Which INPUT VC is at RC stage for each buffer
+	// Which INPUT VC is at RC stage for each buffer
 	input wire [1:0] north_buf_rc_vc,
 	input wire [1:0] east_buf_rc_vc,
 	input wire [1:0] south_buf_rc_vc,
 	input wire [1:0] west_buf_rc_vc,
 	input wire [1:0] local_buf_rc_vc,
+	
+	// Which INPUT VC is at SA stage for each buffer
+	input wire [1:0] north_buf_sa_vc,
+	input wire [1:0] east_buf_sa_vc,
+	input wire [1:0] south_buf_sa_vc,
+	input wire [1:0] west_buf_sa_vc,
+	input wire [1:0] local_buf_sa_vc,
+	
+	// NEW: Is any VC currently granted and active?
+	input wire north_buf_vc_active,
+	input wire east_buf_vc_active,
+	input wire south_buf_vc_active,
+	input wire west_buf_vc_active,
+	input wire local_buf_vc_active,
 	
 	input wire [4:0] north_route,
 	input wire [4:0] east_route,
@@ -355,7 +370,7 @@ module VCA (
 	                                          south_req_local, west_req_local, local_req_local);
 	
 	// ========================================================================
-	// Grant Generation - Check OUTPUT VC availability
+	// Grant Generation - FIXED: Use rc_vc for NEW, sa_vc for CONTINUING
 	// ========================================================================
 	always @(*) begin
 		north_grant = 2'b00;
@@ -365,65 +380,65 @@ module VCA (
 		local_grant = 2'b00;
 		
 		// For each output, check if requested OUTPUT VC is available
-		// But grant the INPUT VC that is making the request
+		// Grant the INPUT VC: use rc_vc if NEW (no VC active), sa_vc if CONTINUING (VC active)
 		if (north_winner == 3'd0 && north_vc_available[north_route[1:0]]) 
-			north_grant = 2'b01 << north_buf_rc_vc[0];
+			north_grant = 2'b01 << (north_buf_vc_active ? north_buf_sa_vc[0] : north_buf_rc_vc[0]);
 		else if (north_winner == 3'd1 && north_vc_available[east_route[1:0]]) 
-			north_grant = 2'b01 << east_buf_rc_vc[0];
+			north_grant = 2'b01 << (east_buf_vc_active ? east_buf_sa_vc[0] : east_buf_rc_vc[0]);
 		else if (north_winner == 3'd2 && north_vc_available[south_route[1:0]]) 
-			north_grant = 2'b01 << south_buf_rc_vc[0];
+			north_grant = 2'b01 << (south_buf_vc_active ? south_buf_sa_vc[0] : south_buf_rc_vc[0]);
 		else if (north_winner == 3'd3 && north_vc_available[west_route[1:0]]) 
-			north_grant = 2'b01 << west_buf_rc_vc[0];
+			north_grant = 2'b01 << (west_buf_vc_active ? west_buf_sa_vc[0] : west_buf_rc_vc[0]);
 		else if (north_winner == 3'd4 && north_vc_available[local_route[1:0]]) 
-			north_grant = 2'b01 << local_buf_rc_vc[0];
+			north_grant = 2'b01 << (local_buf_vc_active ? local_buf_sa_vc[0] : local_buf_rc_vc[0]);
 		
 		if (east_winner == 3'd0 && east_vc_available[north_route[1:0]]) 
-			east_grant = 2'b01 << north_buf_rc_vc[0];
+			east_grant = 2'b01 << (north_buf_vc_active ? north_buf_sa_vc[0] : north_buf_rc_vc[0]);
 		else if (east_winner == 3'd1 && east_vc_available[east_route[1:0]]) 
-			east_grant = 2'b01 << east_buf_rc_vc[0];
+			east_grant = 2'b01 << (east_buf_vc_active ? east_buf_sa_vc[0] : east_buf_rc_vc[0]);
 		else if (east_winner == 3'd2 && east_vc_available[south_route[1:0]]) 
-			east_grant = 2'b01 << south_buf_rc_vc[0];
+			east_grant = 2'b01 << (south_buf_vc_active ? south_buf_sa_vc[0] : south_buf_rc_vc[0]);
 		else if (east_winner == 3'd3 && east_vc_available[west_route[1:0]]) 
-			east_grant = 2'b01 << west_buf_rc_vc[0];
+			east_grant = 2'b01 << (west_buf_vc_active ? west_buf_sa_vc[0] : west_buf_rc_vc[0]);
 		else if (east_winner == 3'd4 && east_vc_available[local_route[1:0]]) 
-			east_grant = 2'b01 << local_buf_rc_vc[0];
+			east_grant = 2'b01 << (local_buf_vc_active ? local_buf_sa_vc[0] : local_buf_rc_vc[0]);
 		
 		if (south_winner == 3'd0 && south_vc_available[north_route[1:0]]) 
-			south_grant = 2'b01 << north_buf_rc_vc[0];
+			south_grant = 2'b01 << (north_buf_vc_active ? north_buf_sa_vc[0] : north_buf_rc_vc[0]);
 		else if (south_winner == 3'd1 && south_vc_available[east_route[1:0]]) 
-			south_grant = 2'b01 << east_buf_rc_vc[0];
+			south_grant = 2'b01 << (east_buf_vc_active ? east_buf_sa_vc[0] : east_buf_rc_vc[0]);
 		else if (south_winner == 3'd2 && south_vc_available[south_route[1:0]]) 
-			south_grant = 2'b01 << south_buf_rc_vc[0];
+			south_grant = 2'b01 << (south_buf_vc_active ? south_buf_sa_vc[0] : south_buf_rc_vc[0]);
 		else if (south_winner == 3'd3 && south_vc_available[west_route[1:0]]) 
-			south_grant = 2'b01 << west_buf_rc_vc[0];
+			south_grant = 2'b01 << (west_buf_vc_active ? west_buf_sa_vc[0] : west_buf_rc_vc[0]);
 		else if (south_winner == 3'd4 && south_vc_available[local_route[1:0]]) 
-			south_grant = 2'b01 << local_buf_rc_vc[0];
+			south_grant = 2'b01 << (local_buf_vc_active ? local_buf_sa_vc[0] : local_buf_rc_vc[0]);
 		
 		if (west_winner == 3'd0 && west_vc_available[north_route[1:0]]) 
-			west_grant = 2'b01 << north_buf_rc_vc[0];
+			west_grant = 2'b01 << (north_buf_vc_active ? north_buf_sa_vc[0] : north_buf_rc_vc[0]);
 		else if (west_winner == 3'd1 && west_vc_available[east_route[1:0]]) 
-			west_grant = 2'b01 << east_buf_rc_vc[0];
+			west_grant = 2'b01 << (east_buf_vc_active ? east_buf_sa_vc[0] : east_buf_rc_vc[0]);
 		else if (west_winner == 3'd2 && west_vc_available[south_route[1:0]]) 
-			west_grant = 2'b01 << south_buf_rc_vc[0];
+			west_grant = 2'b01 << (south_buf_vc_active ? south_buf_sa_vc[0] : south_buf_rc_vc[0]);
 		else if (west_winner == 3'd3 && west_vc_available[west_route[1:0]]) 
-			west_grant = 2'b01 << west_buf_rc_vc[0];
+			west_grant = 2'b01 << (west_buf_vc_active ? west_buf_sa_vc[0] : west_buf_rc_vc[0]);
 		else if (west_winner == 3'd4 && west_vc_available[local_route[1:0]]) 
-			west_grant = 2'b01 << local_buf_rc_vc[0];
+			west_grant = 2'b01 << (local_buf_vc_active ? local_buf_sa_vc[0] : local_buf_rc_vc[0]);
 		
 		if (local_winner == 3'd0 && local_vc_available[north_route[1:0]]) 
-			local_grant = 2'b01 << north_buf_rc_vc[0];
+			local_grant = 2'b01 << (north_buf_vc_active ? north_buf_sa_vc[0] : north_buf_rc_vc[0]);
 		else if (local_winner == 3'd1 && local_vc_available[east_route[1:0]]) 
-			local_grant = 2'b01 << east_buf_rc_vc[0];
+			local_grant = 2'b01 << (east_buf_vc_active ? east_buf_sa_vc[0] : east_buf_rc_vc[0]);
 		else if (local_winner == 3'd2 && local_vc_available[south_route[1:0]]) 
-			local_grant = 2'b01 << south_buf_rc_vc[0];
+			local_grant = 2'b01 << (south_buf_vc_active ? south_buf_sa_vc[0] : south_buf_rc_vc[0]);
 		else if (local_winner == 3'd3 && local_vc_available[west_route[1:0]]) 
-			local_grant = 2'b01 << west_buf_rc_vc[0];
+			local_grant = 2'b01 << (west_buf_vc_active ? west_buf_sa_vc[0] : west_buf_rc_vc[0]);
 		else if (local_winner == 3'd4 && local_vc_available[local_route[1:0]]) 
-			local_grant = 2'b01 << local_buf_rc_vc[0];
+			local_grant = 2'b01 << (local_buf_vc_active ? local_buf_sa_vc[0] : local_buf_rc_vc[0]);
 	end
 	
 	// ========================================================================
-	// Map grants back to buffers - FIXED to check winner instead of request
+	// Map grants back to buffers
 	// ========================================================================
 	assign north_buf_vc_grant = (north_winner == 3'd0) ? north_grant :
 	                             (east_winner == 3'd0) ? east_grant :

@@ -226,6 +226,15 @@ module RC (
 	assign out_southBuf_vc = out_southBuf[1:0];
 	assign out_westBuf_vc = out_westBuf[1:0];
 	assign out_local_vc = out_local[1:0];
+	
+	always @(posedge clk) begin
+  if (!rst) begin
+    if (in_westBuf[57:55] != 3'b000) begin
+      $display("[RC %m] time=%0t pkt_id=%0d flit_type=%b using route=%b",
+               $time, in_westBuf[54:48], in_westBuf[57:55], out_westBuf);
+    end
+  end
+end
 
 endmodule
 
@@ -302,5 +311,7 @@ module route_computation_westfirst (
 	                      selected_avail[1] ? 2'b01 : 2'b00;
 	
 	assign route_out = {selected_port, selected_vc};
+	
+	
 
 endmodule

@@ -1,5 +1,6 @@
+
 // ============================================================================
-// Router Top-Level Module - UPDATED for Wormhole Flow Control in CBA
+// Router Top-Level Module - FIXED: Added vc_active signals
 // ============================================================================
 module Router (
 	input wire clk,
@@ -39,6 +40,12 @@ module Router (
 	// Which INPUT VC is at RC stage for each buffer
 	wire [1:0] north_buf_rc_vc, east_buf_rc_vc, south_buf_rc_vc, west_buf_rc_vc, local_buf_rc_vc;
 	
+	// Which INPUT VC is at SA stage for each buffer
+	wire [1:0] north_buf_sa_vc, east_buf_sa_vc, south_buf_sa_vc, west_buf_sa_vc, local_buf_sa_vc;
+	
+	// NEW: Is any VC currently granted and active?
+	wire north_buf_vc_active, east_buf_vc_active, south_buf_vc_active, west_buf_vc_active, local_buf_vc_active;
+	
 	// VC status and grant signals
 	wire [1:0] north_buf_vc_status, east_buf_vc_status, south_buf_vc_status, west_buf_vc_status, local_buf_vc_status;
 	wire [1:0] north_buf_vc_grant, east_buf_vc_grant, south_buf_vc_grant, west_buf_vc_grant, local_buf_vc_grant;
@@ -59,9 +66,7 @@ module Router (
 	wire [1:0] north_buf_vc_to_cbs, east_buf_vc_to_cbs, south_buf_vc_to_cbs, west_buf_vc_to_cbs, local_buf_vc_to_cbs;
 	wire north_buf_cbs_valid, east_buf_cbs_valid, south_buf_cbs_valid, west_buf_cbs_valid, local_buf_cbs_valid;
 	
-	// ========================================================================
-	// NEW: Extract flit_type and pkt_id from buffer outputs for CBA
-	// ========================================================================
+	// Extract flit_type and pkt_id from buffer outputs for CBA
 	wire [2:0] north_buf_flit_type = north_buf_to_cbs[57:55];
 	wire [2:0] east_buf_flit_type = east_buf_to_cbs[57:55];
 	wire [2:0] south_buf_flit_type = south_buf_to_cbs[57:55];
@@ -82,6 +87,7 @@ module Router (
 		.dataIn(northIn), .dataIn_valid(northIn_valid), .dataIn_vc(northIn_vc),
 		.vc_status(north_buf_vc_status), .vc_grant(north_buf_vc_grant),
 		.rc_flit_out(north_buf_to_rc), .rc_valid(north_rc_valid), .rc_vc_out(north_buf_rc_vc),
+		.sa_vc_out(north_buf_sa_vc), .vc_active(north_buf_vc_active),
 		.cba_grant(north_buf_cba_grant), .cba_request(north_buf_cba_request),
 		.cbs_flit_out(north_buf_to_cbs), .cbs_vc_out(north_buf_vc_to_cbs), .cbs_valid(north_buf_cbs_valid)
 	);
@@ -91,6 +97,7 @@ module Router (
 		.dataIn(eastIn), .dataIn_valid(eastIn_valid), .dataIn_vc(eastIn_vc),
 		.vc_status(east_buf_vc_status), .vc_grant(east_buf_vc_grant),
 		.rc_flit_out(east_buf_to_rc), .rc_valid(east_rc_valid), .rc_vc_out(east_buf_rc_vc),
+		.sa_vc_out(east_buf_sa_vc), .vc_active(east_buf_vc_active),
 		.cba_grant(east_buf_cba_grant), .cba_request(east_buf_cba_request),
 		.cbs_flit_out(east_buf_to_cbs), .cbs_vc_out(east_buf_vc_to_cbs), .cbs_valid(east_buf_cbs_valid)
 	);
@@ -100,6 +107,7 @@ module Router (
 		.dataIn(southIn), .dataIn_valid(southIn_valid), .dataIn_vc(southIn_vc),
 		.vc_status(south_buf_vc_status), .vc_grant(south_buf_vc_grant),
 		.rc_flit_out(south_buf_to_rc), .rc_valid(south_rc_valid), .rc_vc_out(south_buf_rc_vc),
+		.sa_vc_out(south_buf_sa_vc), .vc_active(south_buf_vc_active),
 		.cba_grant(south_buf_cba_grant), .cba_request(south_buf_cba_request),
 		.cbs_flit_out(south_buf_to_cbs), .cbs_vc_out(south_buf_vc_to_cbs), .cbs_valid(south_buf_cbs_valid)
 	);
@@ -109,6 +117,7 @@ module Router (
 		.dataIn(westIn), .dataIn_valid(westIn_valid), .dataIn_vc(westIn_vc),
 		.vc_status(west_buf_vc_status), .vc_grant(west_buf_vc_grant),
 		.rc_flit_out(west_buf_to_rc), .rc_valid(west_rc_valid), .rc_vc_out(west_buf_rc_vc),
+		.sa_vc_out(west_buf_sa_vc), .vc_active(west_buf_vc_active),
 		.cba_grant(west_buf_cba_grant), .cba_request(west_buf_cba_request),
 		.cbs_flit_out(west_buf_to_cbs), .cbs_vc_out(west_buf_vc_to_cbs), .cbs_valid(west_buf_cbs_valid)
 	);
@@ -118,6 +127,7 @@ module Router (
 		.dataIn(peIn), .dataIn_valid(peIn_valid), .dataIn_vc(peIn_vc),
 		.vc_status(local_buf_vc_status), .vc_grant(local_buf_vc_grant),
 		.rc_flit_out(local_buf_to_rc), .rc_valid(local_rc_valid), .rc_vc_out(local_buf_rc_vc),
+		.sa_vc_out(local_buf_sa_vc), .vc_active(local_buf_vc_active),
 		.cba_grant(local_buf_cba_grant), .cba_request(local_buf_cba_request),
 		.cbs_flit_out(local_buf_to_cbs), .cbs_vc_out(local_buf_vc_to_cbs), .cbs_valid(local_buf_cbs_valid)
 	);
@@ -150,6 +160,12 @@ module Router (
 		.north_buf_rc_vc(north_buf_rc_vc), .east_buf_rc_vc(east_buf_rc_vc),
 		.south_buf_rc_vc(south_buf_rc_vc), .west_buf_rc_vc(west_buf_rc_vc),
 		.local_buf_rc_vc(local_buf_rc_vc),
+		.north_buf_sa_vc(north_buf_sa_vc), .east_buf_sa_vc(east_buf_sa_vc),
+		.south_buf_sa_vc(south_buf_sa_vc), .west_buf_sa_vc(west_buf_sa_vc),
+		.local_buf_sa_vc(local_buf_sa_vc),
+		.north_buf_vc_active(north_buf_vc_active), .east_buf_vc_active(east_buf_vc_active),
+		.south_buf_vc_active(south_buf_vc_active), .west_buf_vc_active(west_buf_vc_active),
+		.local_buf_vc_active(local_buf_vc_active),
 		.north_route(north_route), .east_route(east_route), .south_route(south_route),
 		.west_route(west_route), .local_route(local_route),
 		.north_route_valid(north_rc_valid), .east_route_valid(east_rc_valid),
@@ -170,24 +186,22 @@ module Router (
 	);
 	
 	// ========================================================================
-	// Crossbar Allocator - UPDATED with flit_type and pkt_id inputs
+	// Crossbar Allocator
 	// ========================================================================
 	CBA CBAunit (
 		.clk(clk), .rst(rst),
-		.router_x(router_x), .router_y(router_y),  // ADD THESE!
+		.router_x(router_x), .router_y(router_y),
 		.north_buf_request(north_buf_cba_request), .east_buf_request(east_buf_cba_request),
 		.south_buf_request(south_buf_cba_request), .west_buf_request(west_buf_cba_request),
 		.local_buf_request(local_buf_cba_request),
 		.north_route(north_route), .east_route(east_route), .south_route(south_route),
 		.west_route(west_route), .local_route(local_route),
-		// NEW: Add flit_type and pkt_id inputs
 		.north_buf_flit_type(north_buf_flit_type), .east_buf_flit_type(east_buf_flit_type),
 		.south_buf_flit_type(south_buf_flit_type), .west_buf_flit_type(west_buf_flit_type),
 		.local_buf_flit_type(local_buf_flit_type),
 		.north_buf_pkt_id(north_buf_pkt_id), .east_buf_pkt_id(east_buf_pkt_id),
 		.south_buf_pkt_id(south_buf_pkt_id), .west_buf_pkt_id(west_buf_pkt_id),
 		.local_buf_pkt_id(local_buf_pkt_id),
-		// Existing outputs
 		.north_buf_grant(north_buf_cba_grant), .east_buf_grant(east_buf_cba_grant),
 		.south_buf_grant(south_buf_cba_grant), .west_buf_grant(west_buf_cba_grant),
 		.local_buf_grant(local_buf_cba_grant),
