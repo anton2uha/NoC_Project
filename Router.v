@@ -1,6 +1,5 @@
-
 // ============================================================================
-// Router Top-Level Module - FIXED: Added vc_active signals
+// Router Top-Level Module
 // ============================================================================
 module Router (
 	input wire clk,

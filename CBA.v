@@ -1,6 +1,5 @@
-
 // ============================================================================
-// Crossbar Switch Allocator (CBA) - FIXED with debug and router ID
+// Crossbar Switch Allocator (CBA)
 // ============================================================================
 module CBA (
 	input wire clk,
@@ -126,7 +125,7 @@ module CBA (
 	endfunction
 	
 	// ========================================================================
-	// Request Signals - FIXED: west_req_south was using south_route!
+	// Request Signals
 	// ========================================================================
 	wire north_req_north = north_buf_request && (north_route[4:2] == 3'b000);
 	wire north_req_east = north_buf_request && (north_route[4:2] == 3'b001);
@@ -258,35 +257,7 @@ module CBA (
 		                                  local_req_local_filtered);
 	end
 	
-	// ========================================================================
-	// DEBUG: Print only for router (2,2) during test 7 timeframe
-	// ========================================================================
-	always @(posedge clk) begin
-		if (router_x == 3'd2 && router_y == 3'd2) begin
-			if (north_req_east || south_req_east || west_req_east) begin
-				$display("[CBA DEBUG @ (2,2)] Cycle %0d: EAST OUTPUT REQUESTS", $time/2);
-				$display("  Lock Status: east_port_locked=%b, locked_pkt_id=%d", 
-				         east_port_locked, east_locked_pkt_id);
-				
-				if (north_req_east) begin
-					$display("  NORTH->EAST: req=%b, pkt_id=%d, flit_type=%b, filtered=%b",
-					         north_req_east, north_buf_pkt_id, north_buf_flit_type, north_req_east_filtered);
-				end
-				
-				if (south_req_east) begin
-					$display("  SOUTH->EAST: req=%b, pkt_id=%d, flit_type=%b, filtered=%b",
-					         south_req_east, south_buf_pkt_id, south_buf_flit_type, south_req_east_filtered);
-				end
-				
-				if (west_req_east) begin
-					$display("  WEST->EAST: req=%b, pkt_id=%d, flit_type=%b, filtered=%b",
-					         west_req_east, west_buf_pkt_id, west_buf_flit_type, west_req_east_filtered);
-				end
-				
-				$display("  EAST Winner: %d", east_winner);
-			end
-		end
-	end
+	
 	
 	// ========================================================================
 	// Port Locking State Machine
@@ -365,70 +336,40 @@ module CBA (
 					3'd0: if (north_buf_flit_type == 3'b000) begin
 						east_port_locked <= 1'b1;
 						east_locked_pkt_id <= north_buf_pkt_id;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA LOCK @ (2,2)] Cycle %0d: EAST port LOCKED by pkt_id=%d from NORTH",
-							         $time/2, north_buf_pkt_id);
 					end
 					3'd1: if (east_buf_flit_type == 3'b000) begin
 						east_port_locked <= 1'b1;
 						east_locked_pkt_id <= east_buf_pkt_id;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA LOCK @ (2,2)] Cycle %0d: EAST port LOCKED by pkt_id=%d from EAST",
-							         $time/2, east_buf_pkt_id);
 					end
 					3'd2: if (south_buf_flit_type == 3'b000) begin
 						east_port_locked <= 1'b1;
 						east_locked_pkt_id <= south_buf_pkt_id;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA LOCK @ (2,2)] Cycle %0d: EAST port LOCKED by pkt_id=%d from SOUTH",
-							         $time/2, south_buf_pkt_id);
 					end
 					3'd3: if (west_buf_flit_type == 3'b000) begin
 						east_port_locked <= 1'b1;
 						east_locked_pkt_id <= west_buf_pkt_id;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA LOCK @ (2,2)] Cycle %0d: EAST port LOCKED by pkt_id=%d from WEST",
-							         $time/2, west_buf_pkt_id);
 					end
 					3'd4: if (local_buf_flit_type == 3'b000) begin
 						east_port_locked <= 1'b1;
 						east_locked_pkt_id <= local_buf_pkt_id;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA LOCK @ (2,2)] Cycle %0d: EAST port LOCKED by pkt_id=%d from LOCAL",
-							         $time/2, local_buf_pkt_id);
 					end
 				endcase
 			end else begin
 				case (east_winner)
 					3'd0: if (north_buf_flit_type == 3'b010 && north_buf_pkt_id == east_locked_pkt_id) begin
 						east_port_locked <= 1'b0;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA UNLOCK @ (2,2)] Cycle %0d: EAST port UNLOCKED (pkt_id=%d TAIL from NORTH)",
-							         $time/2, north_buf_pkt_id);
 					end
 					3'd1: if (east_buf_flit_type == 3'b010 && east_buf_pkt_id == east_locked_pkt_id) begin
 						east_port_locked <= 1'b0;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA UNLOCK @ (2,2)] Cycle %0d: EAST port UNLOCKED (pkt_id=%d TAIL from EAST)",
-							         $time/2, east_buf_pkt_id);
 					end
 					3'd2: if (south_buf_flit_type == 3'b010 && south_buf_pkt_id == east_locked_pkt_id) begin
 						east_port_locked <= 1'b0;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA UNLOCK @ (2,2)] Cycle %0d: EAST port UNLOCKED (pkt_id=%d TAIL from SOUTH)",
-							         $time/2, south_buf_pkt_id);
 					end
 					3'd3: if (west_buf_flit_type == 3'b010 && west_buf_pkt_id == east_locked_pkt_id) begin
 						east_port_locked <= 1'b0;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA UNLOCK @ (2,2)] Cycle %0d: EAST port UNLOCKED (pkt_id=%d TAIL from WEST)",
-							         $time/2, west_buf_pkt_id);
 					end
 					3'd4: if (local_buf_flit_type == 3'b010 && local_buf_pkt_id == east_locked_pkt_id) begin
 						east_port_locked <= 1'b0;
-						if (router_x == 3'd2 && router_y == 3'd2)
-							$display("[CBA UNLOCK @ (2,2)] Cycle %0d: EAST port UNLOCKED (pkt_id=%d TAIL from LOCAL)",
-							         $time/2, local_buf_pkt_id);
 					end
 				endcase
 			end
@@ -614,6 +555,7 @@ module CBA (
 	assign west_out_select = west_winner;
 	assign local_out_select = local_winner;
 	
+	/*
 	always @(posedge clk) begin
     if (!rst) begin
         if (west_buf_grant) begin
@@ -623,6 +565,6 @@ module CBA (
                      west_route[1] ? 3'b011 : 3'b111);
         end
     end
-end
+	end*/
 
 endmodule

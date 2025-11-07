@@ -1,3 +1,4 @@
+
 // Packet Format Definition
 // ============================================================================
 // [63:61] - Destination Y coordinate (3 bits: 0-3)
@@ -227,14 +228,14 @@ module RC (
 	assign out_westBuf_vc = out_westBuf[1:0];
 	assign out_local_vc = out_local[1:0];
 	
-	always @(posedge clk) begin
-  if (!rst) begin
+	/*always @(posedge clk) begin
+	if (!rst) begin
     if (in_westBuf[57:55] != 3'b000) begin
       $display("[RC %m] time=%0t pkt_id=%0d flit_type=%b using route=%b",
                $time, in_westBuf[54:48], in_westBuf[57:55], out_westBuf);
     end
-  end
-end
+	end
+end*/
 
 endmodule
 

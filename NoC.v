@@ -1,4 +1,3 @@
-
 // Network-on-Chip Top-Level Module - 3x3 Mesh with Router Coordinates
 
 /*
@@ -26,16 +25,15 @@ module NoC (
     input wire [1:0] east_sel,   // Select 41, 42, or 43
     input wire [1:0] north_sel,  // Select 14, 24, or 34
     
-    // Valid and VC signals per side
     input wire in_west_valid,
     input wire in_south_valid,
     input wire in_east_valid,
     input wire in_north_valid,
     
-    input wire [1:0] in_west_vc,
-    input wire [1:0] in_south_vc,
-    input wire [1:0] in_east_vc,
-    input wire [1:0] in_north_vc,
+    input wire in_west_vc,
+    input wire in_south_vc,
+    input wire in_east_vc,
+    input wire in_north_vc,
     
     // 4-bit external outputs
     output wire [3:0] out_west,
@@ -48,17 +46,30 @@ module NoC (
     output wire out_east_valid,
     output wire out_north_valid,
     
-    output wire [1:0] out_west_vc,
-    output wire [1:0] out_south_vc,
-    output wire [1:0] out_east_vc,
-    output wire [1:0] out_north_vc
+    output wire out_west_vc,
+    output wire out_south_vc,
+    output wire out_east_vc,
+    output wire out_north_vc
 );
 
     parameter FLIT_W = 64;
     
     // ========================================================================
+    // VC Conversion: 1-bit external <-> 2-bit internal
+    // This saves 8 pins while keeping internal mesh at full 4-VC capability
+    // ========================================================================
+    
+    // Input: 1-bit external -> 2-bit internal (pad MSB with 0)
+    wire [1:0] in_west_vc_int  = {1'b0, in_west_vc};
+    wire [1:0] in_south_vc_int = {1'b0, in_south_vc};
+    wire [1:0] in_east_vc_int  = {1'b0, in_east_vc};
+    wire [1:0] in_north_vc_int = {1'b0, in_north_vc};
+    
+    // Output conversion handled in output mux (take LSB [0])
+    
+    // ========================================================================
     // Internal 64-bit signals to/from edge deserializers/serializers since 
-	 // we are limited to 60 input pins 
+    // we are limited to 60 input pins 
     // ========================================================================
     
     // Deserializer outputs (to routers)
@@ -163,6 +174,7 @@ module NoC (
     
     // ========================================================================
     // Output Mux: Select which serializer outputs to external pins
+    // 2-bit internal VC -> 1-bit external VC (take LSB [0])
     // ========================================================================
     
     assign out_west = (west_sel == 2'b00) ? ser_out01 :
@@ -173,9 +185,9 @@ module NoC (
                             (west_sel == 2'b01) ? ser_out02_valid :
                             (west_sel == 2'b10) ? ser_out03_valid : 1'b0;
     
-    assign out_west_vc = (west_sel == 2'b00) ? ser_out01_vc :
-                         (west_sel == 2'b01) ? ser_out02_vc :
-                         (west_sel == 2'b10) ? ser_out03_vc : 2'b0;
+    assign out_west_vc = (west_sel == 2'b00) ? ser_out01_vc[0] :
+                         (west_sel == 2'b01) ? ser_out02_vc[0] :
+                         (west_sel == 2'b10) ? ser_out03_vc[0] : 1'b0;
     
     assign out_south = (south_sel == 2'b00) ? ser_out10 :
                        (south_sel == 2'b01) ? ser_out20 :
@@ -185,9 +197,9 @@ module NoC (
                              (south_sel == 2'b01) ? ser_out20_valid :
                              (south_sel == 2'b10) ? ser_out30_valid : 1'b0;
     
-    assign out_south_vc = (south_sel == 2'b00) ? ser_out10_vc :
-                          (south_sel == 2'b01) ? ser_out20_vc :
-                          (south_sel == 2'b10) ? ser_out30_vc : 2'b0;
+    assign out_south_vc = (south_sel == 2'b00) ? ser_out10_vc[0] :
+                          (south_sel == 2'b01) ? ser_out20_vc[0] :
+                          (south_sel == 2'b10) ? ser_out30_vc[0] : 1'b0;
     
     assign out_east = (east_sel == 2'b00) ? ser_out41 :
                       (east_sel == 2'b01) ? ser_out42 :
@@ -197,9 +209,9 @@ module NoC (
                             (east_sel == 2'b01) ? ser_out42_valid :
                             (east_sel == 2'b10) ? ser_out43_valid : 1'b0;
     
-    assign out_east_vc = (east_sel == 2'b00) ? ser_out41_vc :
-                         (east_sel == 2'b01) ? ser_out42_vc :
-                         (east_sel == 2'b10) ? ser_out43_vc : 2'b0;
+    assign out_east_vc = (east_sel == 2'b00) ? ser_out41_vc[0] :
+                         (east_sel == 2'b01) ? ser_out42_vc[0] :
+                         (east_sel == 2'b10) ? ser_out43_vc[0] : 1'b0;
     
     assign out_north = (north_sel == 2'b00) ? ser_out14 :
                        (north_sel == 2'b01) ? ser_out24 :
@@ -209,48 +221,49 @@ module NoC (
                              (north_sel == 2'b01) ? ser_out24_valid :
                              (north_sel == 2'b10) ? ser_out34_valid : 1'b0;
     
-    assign out_north_vc = (north_sel == 2'b00) ? ser_out14_vc :
-                          (north_sel == 2'b01) ? ser_out24_vc :
-                          (north_sel == 2'b10) ? ser_out34_vc : 2'b0;
+    assign out_north_vc = (north_sel == 2'b00) ? ser_out14_vc[0] :
+                          (north_sel == 2'b01) ? ser_out24_vc[0] :
+                          (north_sel == 2'b10) ? ser_out34_vc[0] : 1'b0;
     
     // ========================================================================
     // Deserializer Instantiations (12 total)
+    // Use converted _int signals for VC inputs
     // ========================================================================
     
-    Deserializer d01 (.clk(clk), .rst(rst), .data_in(deser_in01), .valid_in(deser_in01_valid), .vc_in(in_west_vc),
+    Deserializer d01 (.clk(clk), .rst(rst), .data_in(deser_in01), .valid_in(deser_in01_valid), .vc_in(in_west_vc_int),
                       .data_out(deser_out01), .valid_out(deser_out01_valid), .vc_out(deser_out01_vc));
     
-    Deserializer d02 (.clk(clk), .rst(rst), .data_in(deser_in02), .valid_in(deser_in02_valid), .vc_in(in_west_vc),
+    Deserializer d02 (.clk(clk), .rst(rst), .data_in(deser_in02), .valid_in(deser_in02_valid), .vc_in(in_west_vc_int),
                       .data_out(deser_out02), .valid_out(deser_out02_valid), .vc_out(deser_out02_vc));
     
-    Deserializer d03 (.clk(clk), .rst(rst), .data_in(deser_in03), .valid_in(deser_in03_valid), .vc_in(in_west_vc),
+    Deserializer d03 (.clk(clk), .rst(rst), .data_in(deser_in03), .valid_in(deser_in03_valid), .vc_in(in_west_vc_int),
                       .data_out(deser_out03), .valid_out(deser_out03_valid), .vc_out(deser_out03_vc));
     
-    Deserializer d10 (.clk(clk), .rst(rst), .data_in(deser_in10), .valid_in(deser_in10_valid), .vc_in(in_south_vc),
+    Deserializer d10 (.clk(clk), .rst(rst), .data_in(deser_in10), .valid_in(deser_in10_valid), .vc_in(in_south_vc_int),
                       .data_out(deser_out10), .valid_out(deser_out10_valid), .vc_out(deser_out10_vc));
     
-    Deserializer d20 (.clk(clk), .rst(rst), .data_in(deser_in20), .valid_in(deser_in20_valid), .vc_in(in_south_vc),
+    Deserializer d20 (.clk(clk), .rst(rst), .data_in(deser_in20), .valid_in(deser_in20_valid), .vc_in(in_south_vc_int),
                       .data_out(deser_out20), .valid_out(deser_out20_valid), .vc_out(deser_out20_vc));
     
-    Deserializer d30 (.clk(clk), .rst(rst), .data_in(deser_in30), .valid_in(deser_in30_valid), .vc_in(in_south_vc),
+    Deserializer d30 (.clk(clk), .rst(rst), .data_in(deser_in30), .valid_in(deser_in30_valid), .vc_in(in_south_vc_int),
                       .data_out(deser_out30), .valid_out(deser_out30_valid), .vc_out(deser_out30_vc));
     
-    Deserializer d14 (.clk(clk), .rst(rst), .data_in(deser_in14), .valid_in(deser_in14_valid), .vc_in(in_north_vc),
+    Deserializer d14 (.clk(clk), .rst(rst), .data_in(deser_in14), .valid_in(deser_in14_valid), .vc_in(in_north_vc_int),
                       .data_out(deser_out14), .valid_out(deser_out14_valid), .vc_out(deser_out14_vc));
     
-    Deserializer d24 (.clk(clk), .rst(rst), .data_in(deser_in24), .valid_in(deser_in24_valid), .vc_in(in_north_vc),
+    Deserializer d24 (.clk(clk), .rst(rst), .data_in(deser_in24), .valid_in(deser_in24_valid), .vc_in(in_north_vc_int),
                       .data_out(deser_out24), .valid_out(deser_out24_valid), .vc_out(deser_out24_vc));
     
-    Deserializer d34 (.clk(clk), .rst(rst), .data_in(deser_in34), .valid_in(deser_in34_valid), .vc_in(in_north_vc),
+    Deserializer d34 (.clk(clk), .rst(rst), .data_in(deser_in34), .valid_in(deser_in34_valid), .vc_in(in_north_vc_int),
                       .data_out(deser_out34), .valid_out(deser_out34_valid), .vc_out(deser_out34_vc));
     
-    Deserializer d41 (.clk(clk), .rst(rst), .data_in(deser_in41), .valid_in(deser_in41_valid), .vc_in(in_east_vc),
+    Deserializer d41 (.clk(clk), .rst(rst), .data_in(deser_in41), .valid_in(deser_in41_valid), .vc_in(in_east_vc_int),
                       .data_out(deser_out41), .valid_out(deser_out41_valid), .vc_out(deser_out41_vc));
     
-    Deserializer d42 (.clk(clk), .rst(rst), .data_in(deser_in42), .valid_in(deser_in42_valid), .vc_in(in_east_vc),
+    Deserializer d42 (.clk(clk), .rst(rst), .data_in(deser_in42), .valid_in(deser_in42_valid), .vc_in(in_east_vc_int),
                       .data_out(deser_out42), .valid_out(deser_out42_valid), .vc_out(deser_out42_vc));
     
-    Deserializer d43 (.clk(clk), .rst(rst), .data_in(deser_in43), .valid_in(deser_in43_valid), .vc_in(in_east_vc),
+    Deserializer d43 (.clk(clk), .rst(rst), .data_in(deser_in43), .valid_in(deser_in43_valid), .vc_in(in_east_vc_int),
                       .data_out(deser_out43), .valid_out(deser_out43_valid), .vc_out(deser_out43_vc));
     
     // ========================================================================
@@ -304,7 +317,7 @@ module NoC (
     
     wire [63:0] out_pe11, out_pe12, out_pe13, out_pe21, out_pe22, out_pe23, out_pe31, out_pe32, out_pe33;
     
-    // TODO: Connect these to actual PE modules when you add them
+    
     assign in_pe11 = 64'b0; assign in_pe11_valid = 1'b0; assign in_pe11_vc = 2'b0;
     assign in_pe12 = 64'b0; assign in_pe12_valid = 1'b0; assign in_pe12_vc = 2'b0;
     assign in_pe13 = 64'b0; assign in_pe13_valid = 1'b0; assign in_pe13_vc = 2'b0;
@@ -350,7 +363,7 @@ module NoC (
     wire [1:0] edge_credits = 2'b11;
     
     // ========================================================================
-    // Router Instantiations (all connections now 64-bit internal)
+    // Router Instantiations
     // ========================================================================
     
     // Router (1,1)
@@ -528,15 +541,5 @@ module NoC (
         .north_credits_out(), .east_credits_out(),
         .south_credits_out(c_33to32), .west_credits_out(c_33to23), .local_credits_out()
     );
-	 
-	 // DEBUG: Monitor east output
-always @(posedge clk) begin
-    if (!rst) begin
-        if (ser_out43_valid) begin
-            $display("[NOC OUTPUT] Cycle %0d: ser_out43_valid=1, ser_out43=0x%h, east_sel=%b, out_east_valid=%b", 
-                     $time/10, ser_out43, east_sel, out_east_valid);
-        end
-    end
-end
 
 endmodule

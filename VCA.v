@@ -1,6 +1,5 @@
-
 // ============================================================================
-// Virtual Channel Allocator (VCA) - FIXED to use rc_vc for new, sa_vc for continuing
+// Virtual Channel Allocator (VCA)
 // ============================================================================
 module VCA (
 	input wire clk,
